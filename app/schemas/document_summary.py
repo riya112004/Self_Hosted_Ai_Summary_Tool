@@ -57,8 +57,8 @@ DOCUMENT_SUMMARY_SCHEMA = """{
     "document_type": string
   },
   "summary": {
-    "any mode-specific keys": "each key a string or a list of strings,
-                              NEVER a nested object"
+    "<mode_specific_key>": "a string or a list of strings; use real descriptive keys,
+                            never this placeholder and never a nested object"
   },
   "key_points": ["bullet", ...],
   "important_numbers": ["e.g. '2.5x faster', '100k rows' - only numbers that
