@@ -49,10 +49,9 @@ body {
 
 /* ---------- layout ---------- */
 .layout {
-  display: grid; grid-template-columns: minmax(360px, 440px) 1fr; gap: 22px;
-  padding: 26px 28px; max-width: 1500px; margin: 0 auto;
+  display: grid; grid-template-columns: 1fr; gap: 22px;
+  padding: 26px 28px; max-width: 820px; margin: 0 auto;
 }
-@media (max-width: 950px) { .layout { grid-template-columns: 1fr; } }
 
 .panel {
   background: var(--panel); border: 1px solid var(--border);
@@ -120,15 +119,6 @@ textarea:focus, select:focus { outline: none; border-color: var(--accent); }
 .btn.ghost { background: transparent; }
 .btn.sm { padding: 5px 10px; font-size: 12px; }
 .btn.big { width: 100%; margin-top: 20px; padding: 13px; font-size: 15px; }
-
-/* ---------- progress ---------- */
-.progress { display: flex; align-items: center; gap: 10px; margin-top: 14px; color: var(--muted); font-size: 13px; }
-.spinner {
-  width: 16px; height: 16px; border-radius: 50%; flex: none;
-  border: 2px solid var(--border); border-top-color: var(--accent);
-  animation: spin .8s linear infinite;
-}
-@keyframes spin { to { transform: rotate(360deg); } }
 
 /* ---------- output ---------- */
 .output-panel { min-width: 0; }

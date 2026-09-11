@@ -50,35 +50,9 @@
             <option value="system">system</option>
           </select>
         </div>
-
-        <div class="control toggle-row">
-          <label class="switch">
-            <input type="checkbox" id="runLlm" checked />
-            <span class="slider"></span>
-          </label>
-          <div>
-            <b>run_llm</b>
-            <p class="hint" id="llmHint">on → LLM narrative (CPU inference can take minutes)</p>
-          </div>
-        </div>
-
-        <div class="control toggle-row">
-          <label class="switch">
-            <input type="checkbox" id="sanitize" checked />
-            <span class="slider"></span>
-          </label>
-          <div>
-            <b>sanitize</b>
-            <p class="hint">mask emails / phones / passwords</p>
-          </div>
-        </div>
       </div>
 
-      <button type="button" class="btn primary big" id="analyzeBtn" disabled>▶ Summarize</button>
-      <div class="progress" id="progress" hidden>
-        <div class="spinner"></div>
-        <span id="progressText">running…</span>
-      </div>
+      <button type="button" class="btn primary big" id="analyzeBtn">▶ Summarize</button>
     </section>
 
     <!-- ============ OUTPUT ============ -->

@@ -8,12 +8,7 @@ const els = {
   dataInput: document.getElementById("dataInput"),
   fileHint: document.getElementById("fileHint"),
   summaryType: document.getElementById("summaryType"),
-  runLlm: document.getElementById("runLlm"),
-  llmHint: document.getElementById("llmHint"),
-  sanitize: document.getElementById("sanitize"),
   analyzeBtn: document.getElementById("analyzeBtn"),
-  progress: document.getElementById("progress"),
-  progressText: document.getElementById("progressText"),
   outputPanel: document.getElementById("outputPanel"),
   errors: document.getElementById("errors"),
   outTitle: document.getElementById("outTitle"),
@@ -94,15 +89,8 @@ function loadFile(file) {
 }
 
 els.dataInput.addEventListener("input", onInput);
-els.runLlm.addEventListener("change", () => {
-  els.llmHint.textContent = els.runLlm.checked
-    ? "on → LLM narrative (CPU inference can take minutes)"
-    : "off → instant result";
-});
 
-function onInput() {
-  els.analyzeBtn.disabled = els.dataInput.value.trim().length === 0 && !(pendingFile && pendingFile.b64);
-}
+function onInput() {}
 
 /* ---------------- analyze ---------------- */
 
@@ -113,23 +101,20 @@ async function analyze() {
     return;
   }
 
+  setBusy(true);
   hideOutput();
-  showProgress(
-    true,
-    els.runLlm.checked ? "Running LLM — CPU inference can take minutes…" : "Computing…"
-  );
 
   const started = performance.now();
   try {
     const common = {
       summary_type: els.summaryType.value,
-      run_llm: els.runLlm.checked,
+      run_llm: true,
     };
     let payload;
     if (!text && pendingFile && pendingFile.b64) {
       payload = { data_b64: pendingFile.b64, filename: pendingFile.name, ...common };
     } else {
-      payload = { data: text, source_type: "auto", sanitize: els.sanitize.checked, ...common };
+      payload = { data: text, source_type: "auto", sanitize: true, ...common };
     }
 
     const resp = await fetch("/api/v1/summarize/auto", {
@@ -145,14 +130,13 @@ async function analyze() {
     const report = await resp.json();
     render(report, (performance.now() - started) / 1000);
   } catch (err) {
-    showProgress(false);
     reportError(err.message || String(err));
   }
 }
 
-function showProgress(on, text) {
-  els.progress.hidden = !on;
-  if (text) els.progressText.textContent = text;
+function setBusy(busy) {
+  els.analyzeBtn.disabled = busy;
+  els.analyzeBtn.textContent = busy ? "Processing…" : "▶ Summarize";
 }
 
 function hideOutput() {
@@ -161,6 +145,7 @@ function hideOutput() {
 }
 
 function reportError(msg) {
+  setBusy(false);
   els.errors.innerHTML = "";
   els.errors.append(el("h4", null, "Analysis failed"));
   els.errors.append(el("code", null, msg));
@@ -171,7 +156,7 @@ function reportError(msg) {
 /* ---------------- rendering: summary only ---------------- */
 
 function render(report, seconds) {
-  showProgress(false);
+  setBusy(false);
   els.outputPanel.hidden = false;
   els.errors.hidden = true;
 
@@ -200,7 +185,24 @@ function render(report, seconds) {
       text = text + "\n\n(LLM call failed: " + sm.llm_error + " — showing deterministic digest.)";
     }
   } else {
+    // data / report pipeline — SummaryOutput shape
     text = s.executive_summary || "";
+    // structured report has rich fields worth showing
+    if (report.pipeline === "report") {
+      const extras = [];
+      if (Array.isArray(s.key_findings) && s.key_findings.length) {
+        extras.push("KEY FINDINGS\n" + s.key_findings.map(f => "  • " + f).join("\n"));
+      }
+      if (Array.isArray(s.recommendations) && s.recommendations.length) {
+        extras.push("RECOMMENDATIONS\n" + s.recommendations.map(r => "  • " + r).join("\n"));
+      }
+      if (s.calculated_metrics && Object.keys(s.calculated_metrics).length) {
+        const m = Object.entries(s.calculated_metrics)
+          .map(([k, v]) => "  " + k + ": " + v).join("\n");
+        extras.push("METRICS\n" + m);
+      }
+      if (extras.length) text = text + "\n\n" + extras.join("\n\n");
+    }
   }
 
   if (!text) text = "(no summary text returned)";
