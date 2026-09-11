@@ -1,0 +1,105 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>AI Data Summarizer</title>
+  <link rel="stylesheet" href="/static/styles.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="logo">∑</span>
+      <div>
+        <h1>AI Data Summarizer</h1>
+        <p class="tagline">paste text or upload a file → get a summary</p>
+      </div>
+    </div>
+    <div class="server-state" id="serverState">checking…</div>
+  </header>
+
+  <main class="layout">
+    <!-- ============ INPUT ============ -->
+    <section class="panel input-panel">
+      <h2>Input</h2>
+
+      <div class="dropzone" id="dropzone">
+        <div class="dz-icon">⇧</div>
+        <p>Drag &amp; drop a file</p>
+        <p class="dz-sub">CSV · TSV · JSON · Excel · PDF · text</p>
+        <button type="button" class="btn ghost" id="browseBtn">Browse file</button>
+        <input type="file" id="fileInput" hidden
+               accept=".csv,.tsv,.txt,.md,.markdown,.json,.jsonl,.pdf,.html,.xlsx,.xls,text/csv,application/json,text/markdown,application/pdf" />
+      </div>
+
+      <p class="field-label">…or paste text below</p>
+      <textarea id="dataInput" rows="9" spellcheck="false"
+        placeholder="column_a,column_b,column_c&#10;1,hello,1500&#10;2,world,2300"></textarea>
+      <span class="file-hint" id="fileHint"></span>
+
+      <div class="controls">
+        <div class="control">
+          <label for="summaryType">Output type</label>
+          <select id="summaryType">
+            <option value="general" selected>general</option>
+            <option value="executive">executive</option>
+            <option value="technical">technical</option>
+            <option value="financial">financial</option>
+            <option value="research">research</option>
+            <option value="educational">educational</option>
+            <option value="system">system</option>
+          </select>
+        </div>
+
+        <div class="control toggle-row">
+          <label class="switch">
+            <input type="checkbox" id="runLlm" checked />
+            <span class="slider"></span>
+          </label>
+          <div>
+            <b>run_llm</b>
+            <p class="hint" id="llmHint">on → LLM narrative (CPU inference can take minutes)</p>
+          </div>
+        </div>
+
+        <div class="control toggle-row">
+          <label class="switch">
+            <input type="checkbox" id="sanitize" checked />
+            <span class="slider"></span>
+          </label>
+          <div>
+            <b>sanitize</b>
+            <p class="hint">mask emails / phones / passwords</p>
+          </div>
+        </div>
+      </div>
+
+      <button type="button" class="btn primary big" id="analyzeBtn" disabled>▶ Summarize</button>
+      <div class="progress" id="progress" hidden>
+        <div class="spinner"></div>
+        <span id="progressText">running…</span>
+      </div>
+    </section>
+
+    <!-- ============ OUTPUT ============ -->
+    <section class="panel output-panel" id="outputPanel" hidden>
+      <div class="output-head">
+        <h2>Summary</h2>
+      </div>
+
+      <div id="errors" class="errors" hidden></div>
+
+      <div class="card summary-card">
+        <h3 id="outTitle">Summary</h3>
+        <p class="exec" id="outText"></p>
+        <p class="hint" id="outMeta"></p>
+      </div>
+    </section>
+  </main>
+
+  <!-- Toast -->
+  <div id="toast" class="toast" hidden></div>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>

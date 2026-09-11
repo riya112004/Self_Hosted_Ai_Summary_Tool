@@ -1,0 +1,13 @@
+fastapi
+uvicorn[standard]
+python-multipart
+pydantic
+polars
+python-dotenv
+pymongo
+httpx
+celery
+redis
+pypdf
+python-calamine
+openpyxl

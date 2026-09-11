@@ -1,0 +1,65 @@
+# ---- Python ----
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+dist/
+develop-eggs/
+.eggs/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# ---- Virtual environments ----
+venv/
+.venv/
+env/
+ENV/
+
+# ---- Test / tooling caches ----
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+.tox/
+.nox/
+
+# ---- Celery workers ----
+celerybeat-schedule
+celerybeat.pid
+
+# ---- Logs & runtime artifacts ----
+*.log
+
+# ---- Env & secrets ----
+.env
+.env.*
+!.env.example
+
+# ---- Editor / OS cruft ----
+.idea/
+.vscode/
+*.swp
+*~
+.DS_Store
+Thumbs.db
+
+# ---- Legacy standalone scripts (not used by the deployed app) ----
+/summarizer.py
+/profiler.py
+/prompts/
+
+# ---- Tests (not pushed - local dev only) ----
+tests/
+
+# ---- Local data (uploaded / generated) ----
+uploads/
+data/
+*.sqlite3
+*.db
+tests/
+test_analytics/
+/tests/
