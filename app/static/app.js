@@ -15,10 +15,14 @@ const els = {
   outText: document.getElementById("outText"),
   outMeta: document.getElementById("outMeta"),
   toast: document.getElementById("toast"),
+  statusLine: document.getElementById("statusLine"),
 };
 
 let toastTimer = null;
-let pendingFile = null;
+let pendingFile = null; // { name, b64 } for pdf/xlsx
+let pendingText = null; // large text buffers kept OUT of the textarea
+
+const TEXTAREA_MAX = 200 * 1024; // ~200 KB before a textarea slows down
 
 /* ---------------- helpers ---------------- */
 
@@ -34,6 +38,27 @@ function toast(msg) {
   els.toast.hidden = false;
   clearTimeout(toastTimer);
   toastTimer = setTimeout(() => (els.toast.hidden = true), 3200);
+}
+
+function fmtSize(n) {
+  if (n >= 1024 * 1024) return (n / (1024 * 1024)).toFixed(1) + " MB";
+  if (n >= 1024) return (n / 1024).toFixed(1) + " KB";
+  return n + " B";
+}
+
+function setStatus(msg) {
+  if (!msg) {
+    els.statusLine.hidden = true;
+    els.statusLine.textContent = "";
+    return;
+  }
+  els.statusLine.textContent = msg;
+  els.statusLine.hidden = false;
+}
+
+function fmtElapsed(ms) {
+  if (ms < 1000) return `${Math.floor(ms)}ms`;
+  return `${(ms / 1000).toFixed(1)}s`;
 }
 
 /* ---------------- input wiring ---------------- */
@@ -65,37 +90,55 @@ function toBase64(u8) {
 
 function loadFile(file) {
   if (!file) return;
+  els.fileHint.textContent = `Reading ${file.name} (${fmtSize(file.size)})…`;
+  els.fileHint.classList.add("busy");
 
   if (/\.(pdf|xlsx|xls)$/i.test(file.name)) {
     pendingFile = { name: file.name, b64: null };
     const reader = new FileReader();
     reader.onload = () => {
       pendingFile.b64 = toBase64(new Uint8Array(reader.result));
-      els.fileHint.textContent = `${file.name} loaded (${(file.size / 1024).toFixed(1)} KB)`;
+      pendingText = null;
+      els.fileHint.classList.remove("busy");
+      els.fileHint.textContent = `Ready: ${file.name} (${fmtSize(file.size)})`;
       onInput();
     };
     reader.readAsArrayBuffer(file);
     return;
   }
 
-  pendingFile = null;
   const reader = new FileReader();
   reader.onload = () => {
-    els.dataInput.value = String(reader.result);
-    els.fileHint.textContent = `${file.name} loaded (${(file.size / 1024).toFixed(1)} KB)`;
+    const text = String(reader.result);
+    pendingFile = null;
+    if (text.length <= TEXTAREA_MAX) {
+      els.dataInput.value = text;
+      pendingText = null;
+    } else {
+      els.dataInput.value = "";
+      pendingText = text;
+    }
+    els.fileHint.classList.remove("busy");
+    els.fileHint.textContent =
+      `Ready: ${file.name} (${fmtSize(file.size)})` +
+      (pendingText ? " · large file kept in memory" : "");
     onInput();
   };
   reader.readAsText(file);
 }
 
-els.dataInput.addEventListener("input", onInput);
+els.dataInput.addEventListener("input", () => {
+  pendingText = null;
+  onInput();
+});
 
 function onInput() {}
 
 /* ---------------- analyze ---------------- */
 
 async function analyze() {
-  const text = els.dataInput.value.trim();
+  const textFromBox = els.dataInput.value.trim();
+  const text = (pendingText || textFromBox).trim();
   if (!text && !(pendingFile && pendingFile.b64)) {
     toast("Paste text or upload a file first");
     return;
@@ -103,33 +146,90 @@ async function analyze() {
 
   setBusy(true);
   hideOutput();
-
+  setStatus("Preparing payload…");
   const started = performance.now();
-  try {
-    const common = {
-      run_llm: true,
-    };
-    let payload;
+
+  let tick = setInterval(() => {
+    setStatus(`Working… ${fmtElapsed(performance.now() - started)}`);
+  }, 750);
+
+  const clearTick = () => {
+    clearInterval(tick);
+    setStatus("");
+  };
+
+  const basePayload = () => {
     if (!text && pendingFile && pendingFile.b64) {
-      payload = { data_b64: pendingFile.b64, filename: pendingFile.name, ...common };
-    } else {
-      payload = { data: text, source_type: "auto", sanitize: true, ...common };
+      return { data_b64: pendingFile.b64, filename: pendingFile.name };
+    }
+    return { data: text, source_type: "auto", sanitize: true };
+  };
+
+  const fetchReport = async (runLlm) => {
+    const payload = { ...basePayload(), run_llm: runLlm };
+    return fetchPost(payload, runLlm, started);
+  };
+
+  try {
+    const t0 = performance.now();
+    setStatus(`Uploading ${text.length || 0} chars…`);
+
+    // Phase 1: fast deterministic digest -> render almost instantly.
+    try {
+      const det = await fetchReport(false);
+      clearTick();
+      render(det, (performance.now() - started) / 1000, "(deterministic)");
+    } catch (err) {
+      clearTick();
+      reportError(err.message || String(err));
+      return;
     }
 
-    const resp = await fetch("/api/v1/summarize/auto", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
-    });
-    if (resp.status !== 200) {
-      let detail = `HTTP ${resp.status}`;
-      try { detail = (await resp.json()).detail || detail; } catch (_) {}
-      throw new Error(detail);
+    // Phase 2: upgrade with the AI narrative.
+    setBusy(true);
+    setStatus(`Generating AI narrative…`);
+    try {
+      const withLlm = await fetchReport(true);
+      clearTick();
+      render(withLlm, (performance.now() - started) / 1000, "(AI)");
+    } catch (_) {
+      clearTick();
+      toast("AI narrative unavailable; deterministic summary shown");
     }
-    const report = await resp.json();
-    render(report, (performance.now() - started) / 1000);
   } catch (err) {
+    clearTick();
     reportError(err.message || String(err));
+  }
+}
+
+async function fetchPost(payload, runLlm, started) {
+  const resp = await fetch("/api/v1/summarize/auto", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+    signal: AbortSignal.timeout(600000),
+  });
+  if (resp.status === 202) {
+    const job = await resp.json();
+    return pollJob(job.job_id, started);
+  }
+  if (resp.status !== 200) {
+    let detail = `HTTP ${resp.status}`;
+    try { detail = (await resp.json()).detail || detail; } catch (_) {}
+    throw new Error(detail);
+  }
+  return resp.json();
+}
+
+async function pollJob(jobId, started) {
+  while (true) {
+    setStatus(`Processing on server… ${fmtElapsed(performance.now() - started)}`);
+    const r = await fetch(`/api/v1/jobs/${jobId}`);
+    if (!r.ok) throw new Error(`HTTP ${r.status} polling job`);
+    const job = await r.json();
+    if (job.status === "completed") return job.summary;
+    if (job.status === "failed") throw new Error(job.error || "Background job failed");
+    await new Promise((r) => setTimeout(r, 1200));
   }
 }
 
@@ -154,7 +254,7 @@ function reportError(msg) {
 
 /* ---------------- rendering: summary only ---------------- */
 
-function render(report, seconds) {
+function render(report, seconds, source) {
   setBusy(false);
   els.outputPanel.hidden = false;
   els.errors.hidden = true;
@@ -186,7 +286,6 @@ function render(report, seconds) {
   } else {
     // data / report pipeline — SummaryOutput shape
     text = s.executive_summary || "";
-    // structured report has rich fields worth showing
     if (report.pipeline === "report") {
       const extras = [];
       if (Array.isArray(s.key_findings) && s.key_findings.length) {
@@ -221,7 +320,7 @@ function render(report, seconds) {
   const det = report.detection || {};
   els.outMeta.textContent =
     `${report.input_type} · ${report.pipeline}${det.subtype ? " (" + det.subtype + ")" : ""}` +
-    ` · ${seconds.toFixed(1)}s`;
+    ` · ${seconds.toFixed(1)}s${source ? " · " + source : ""}`;
 }
 
 els.analyzeBtn.addEventListener("click", analyze);

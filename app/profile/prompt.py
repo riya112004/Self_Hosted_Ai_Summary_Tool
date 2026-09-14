@@ -58,7 +58,7 @@ def build_profile_prompt(
     blocks.append(
         "JSON OUTPUT (STRICT) - target schema:\n"
         + SUMMARY_SCHEMA_TEXT
-        + "\n\nKeep executive_summary between 30 and 120 words - plain, human "
+        + "\n\nKeep executive_summary between 200 and 400 words - plain, human "
         "language about what the dataset represents. "
         "Preserve the exact numbers from the verified profile."
     )

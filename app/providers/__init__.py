@@ -6,13 +6,19 @@ from .base import LLMProvider
 from .ollama_provider import OllamaProvider
 from .vllm_provider import VLLMProvider
 
+# Load .env exactly once at import time. Re-loading on every get_provider()
+# call made tests undeterministic: a test that delenv()'d a variable was
+# immediately re-populated from the .env file. load_dotenv() never overwrites
+# variables that are already in the environment, so later changes via
+# monkeypatch.setenv / os.environ still win.
+load_dotenv()
+
 
 def get_provider(name: str | None = None) -> LLMProvider:
     """
     Factory: pick the inference server from config.
     Default is Ollama (development). Set LLM_PROVIDER=vllm for production.
     """
-    load_dotenv()
     name = name or os.getenv("LLM_PROVIDER", "ollama")
 
     def _flt(key: str, default: float) -> float:

@@ -27,7 +27,7 @@ from app.schemas.summary import SummaryOutput
 # ---- number extraction -----------------------------------------------------
 # 1,234,567.89 / -0.5 / 60% / 500K / 2M / 3B / 42 million / 1.2 billion
 _NUM_RE = re.compile(
-    r"(?<![\w.])(?P<num>-?(?:\d{1,3}(?:,\d{3})*|\d+)(?:\.\d+)?)\s*"
+    r"(?<![\w.])(?P<num>-?(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?)\s*"
     r"(?P<suffix>(?:%|[KMBk]|\b(?:million|billion|thousand)\b))?",
     re.IGNORECASE,
 )
@@ -78,14 +78,35 @@ def _numeric_leaves(obj):
 
 
 def _allowed_facts(profile: dict | None, sample: dict | None) -> set[float]:
-    """Every numeric variant the model could legitimately reproduce."""
+    """Every numeric variant the model could legitimately reproduce.
+
+    The verified digest is the only numeric source, and it may keep a value as
+    a real number (``rewards: [99341.0, ...]``) or as a display string inside
+    a value-count tile (``{"value": "99341.0", "count": 1}``). Both forms are
+    facts Python computed from the data, so numbers embedded in string leaves
+    of the digest are allowed facts too.
+    """
     facts: set[float] = set()
     for obj in (profile, sample):
         if not obj:
             continue
         for leaf in _numeric_leaves(obj):
             facts |= _fact_variants(leaf)
+        for text in _string_leaves(obj):
+            for value, _suffix in _number_claims(text):
+                facts |= _fact_variants(value)
     return facts
+
+
+def _string_leaves(obj):
+    if isinstance(obj, dict):
+        for v in obj.values():
+            yield from _string_leaves(v)
+    elif isinstance(obj, (list, tuple)):
+        for v in obj:
+            yield from _string_leaves(v)
+    elif isinstance(obj, str):
+        yield obj
 
 
 def _number_claims(text: str) -> list[tuple[float, str]]:

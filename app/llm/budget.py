@@ -92,6 +92,40 @@ _LADDER = [
      "sample_rows": 0, "drop_uniq": True},
 ]
 
+# Report digests (["report_digest"]["sections"]) are compressed with their own
+# ladder: the data-profile keys above simply do not exist there, so a report
+# would otherwise ship its ENTIRE digest (26 title fields + every section's
+# full aggregates) and blow the context window -> 600s Ollama timeout +
+# deterministic-only output.
+_REPORT_LADDER = [
+    # level 0: no truncation
+    {"title": None, "sections": None, "cols": None, "vals": None,
+     "numeric": None, "tokens": None, "findings": None,
+     "counts": None, "summary_chars": None, "fields": None},
+    {"title": 18, "sections": 6, "cols": 4, "vals": 3, "numeric": 5,
+     "tokens": 8, "findings": 2, "counts": 8, "summary_chars": 220,
+     "fields": 10},
+    {"title": 14, "sections": 5, "cols": 3, "vals": 3, "numeric": 4,
+     "tokens": 6, "findings": 2, "counts": 6, "summary_chars": 160,
+     "fields": 8},
+    {"title": 12, "sections": 4, "cols": 2, "vals": 2, "numeric": 3,
+     "tokens": 5, "findings": 1, "counts": 5, "summary_chars": 120,
+     "fields": 6},
+    {"title": 10, "sections": 3, "cols": 1, "vals": 2, "numeric": 2,
+     "tokens": 4, "findings": 1, "counts": 4, "summary_chars": 90,
+     "fields": 4},
+    {"title": 8, "sections": 2, "cols": 1, "vals": 1, "numeric": 1,
+     "tokens": 3, "findings": 0, "counts": 3, "summary_chars": 0,
+     "fields": 3},
+]
+
+# Field names that carry the most meaning for a narrative: keep them in the
+# title_fields even when aggressively truncating the rest.
+_TITLE_PRIORITY = (
+    "title", "description", "info.title", "info.description",
+    "name", "info.EpisodeId", "configuration.episodeSteps",
+)
+
 
 def _clip(items, limit):
     if limit is None:
@@ -99,8 +133,66 @@ def _clip(items, limit):
     return items[:limit]
 
 
+def _compress_report_digest(report: dict, level: int) -> dict:
+    """Compress {"report_digest": ...} consumer-side.
+
+    The report digest has its own shape (title_fields + sections), so the
+    data-profile ladder never touches it. This keeps the most narrative-critical
+    facts (description, config, action tokens, rewards/status) while cutting the
+    raw bulk so the prompt fits the budget and the Ollama call completes fast.
+    """
+    d = copy.deepcopy(report.get("report_digest") or {})
+    cfg = _REPORT_LADDER[level]
+
+    tf = d.get("title_fields") or {}
+    if cfg["title"] is not None:
+        ordered = sorted(
+            tf.items(),
+            key=lambda kv: (_TITLE_PRIORITY.index(kv[0])
+                            if kv[0] in _TITLE_PRIORITY else len(_TITLE_PRIORITY),
+                            list(tf.keys()).index(kv[0])),
+        )
+        d["title_fields"] = dict(ordered[: cfg["title"]])
+
+    sections = d.get("sections") or []
+    if cfg["sections"] is not None:
+        sections = sections[: cfg["sections"]]
+    for s in sections:
+        if s.get("kind") == "table":
+            for key, lim in (
+                ("categorical_values", cfg["cols"]),
+                ("numeric_stats", cfg["numeric"]),
+                ("action_tokens", cfg["tokens"]),
+                ("findings", cfg["findings"]),
+            ):
+                if lim is None:
+                    continue
+                items = s.get(key)
+                if isinstance(items, list):
+                    if key == "categorical_values":
+                        s[key] = [
+                            {**c, "top": (c.get("top") or [])[: cfg["vals"]]}
+                            for c in items[:lim]
+                        ]
+                    else:
+                        s[key] = items[:lim]
+        elif s.get("kind") == "list":
+            counts = s.get("value_counts")
+            if isinstance(counts, list) and cfg["counts"] is not None:
+                s["value_counts"] = counts[: cfg["counts"]]
+        if cfg["summary_chars"] is not None and isinstance(s.get("summary"), str):
+            s["summary"] = s["summary"][: cfg["summary_chars"]]
+        if cfg["fields"] is not None and isinstance(s.get("fields"), list):
+            s["fields"] = s["fields"][: cfg["fields"]]
+    d["sections"] = sections
+    return {"report_digest": d}
+
+
 def _compress_digest(profile: dict, sample: dict | None, level: int):
     """Apply compression `level` to a deep copy of the digest. Pure."""
+    if "report_digest" in profile:
+        return _compress_report_digest(profile, level), sample
+
     p = copy.deepcopy(profile)
     s = copy.deepcopy(sample) if sample else None
     cfg = _LADDER[level]

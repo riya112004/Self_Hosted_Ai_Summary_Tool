@@ -28,5 +28,5 @@ Present your analysis using these sections:
 - KEY FINDINGS: 3-6 bullets of meaningful facts, quantities and patterns.
 - RECOMMENDATIONS: what this data could be used for, based only on what is here.
 
-Write a short, clear, factual summary in plain English (under 150 words),
+Write a short, clear, factual summary in plain English (200-400 words),
 grounded only in the supplied profile.
