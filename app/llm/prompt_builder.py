@@ -91,6 +91,21 @@ def _fmt_samples(rows) -> str:
     )
 
 
+def _fmt_sample_buckets(sample) -> str:
+    """Format boundary and seeded middle samples without sending all rows."""
+    buckets = sample.get("buckets", {}) if isinstance(sample, dict) else {}
+    if not buckets:
+        rows = sample.get("rows", []) if isinstance(sample, dict) else sample
+        return _fmt_samples(rows)
+
+    parts = []
+    for label in ("first", "random", "last"):
+        rows = buckets.get(label, [])
+        if rows:
+            parts.append(f"{label.upper()} {len(rows)} RECORDS\n{_fmt_samples(rows)}")
+    return "\n\n".join(parts)
+
+
 def _json_output_instruction() -> str:
     """STRICT JSON requirement that mirrors the Pydantic validation schema."""
     from app.schemas.summary import SummaryOutput
@@ -146,19 +161,7 @@ def _extract_context(data) -> dict:
     }
 
 
-def _apply_mode(system: str, mode: str) -> str:
-    """Append the mode's focus areas to the SYSTEM INSTRUCTIONS block."""
-    from app.modes import get_mode
-
-    config = get_mode(mode)
-    focus = config["focus"]
-    if not focus:
-        return system
-    focus_block = "\n".join(f"- {item}" for item in focus)
-    return f"{system}\n\nFocus on:\n{focus_block}"
-
-
-def build_prompt(data, mode: str = "system", template: str | None = None) -> str:
+def build_prompt(data) -> str:
     """
     Assemble the full LLM prompt with sections:
       SYSTEM INSTRUCTIONS, DATASET SCHEMA, DATA QUALITY, CALCULATED STATISTICS,
@@ -169,17 +172,10 @@ def build_prompt(data, mode: str = "system", template: str | None = None) -> str
       - a build_context() output dict
       - a pipeline payload dict with a "context" key
 
-    `mode` selects a summary configuration (system/executive/financial/technical).
-    A raw `template` name is accepted for backwards compatibility.
+    There is a single output style ("general"): a plain-language explanation
+    of what the raw data actually is.
     """
-    if template is not None:
-        mode = template
-
-    from app.modes import get_mode
-
-    config = get_mode(mode)
-    system, output = _load_template(config["template"])
-    system = _apply_mode(system, mode)
+    system, output = _load_template("general")
 
     extracted = _extract_context(data)
     context = extracted["context"]
@@ -210,7 +206,7 @@ def build_prompt(data, mode: str = "system", template: str | None = None) -> str
     if isinstance(sample, list):
         sample_rows = sample
     if sample_rows:
-        parts.append("REPRESENTATIVE RECORDS\n" + _fmt_samples(sample_rows))
+        parts.append("REPRESENTATIVE RECORDS\n" + _fmt_sample_buckets(sample))
 
     if output:
         parts.append("OUTPUT REQUIREMENTS\n" + output)

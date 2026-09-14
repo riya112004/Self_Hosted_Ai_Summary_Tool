@@ -5,7 +5,11 @@ from pydantic import BaseModel
 
 
 class SummaryOutput(BaseModel):
-    """Pydantic validation layer for structured LLM output."""
+    """Pydantic validation layer for structured LLM output.
+
+    ``fact_guard`` is populated by the FactGuard layer (app.llm.guard) after
+    the LLM output is parsed - it is never expected from the model itself.
+    """
 
     title: str
     executive_summary: str
@@ -13,6 +17,7 @@ class SummaryOutput(BaseModel):
     calculated_metrics: dict
     anomalies_detected: list[str]
     recommendations: list[str]
+    fact_guard: dict | None = None
 
 
 class StructuredOutputError(ValueError):

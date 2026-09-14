@@ -37,7 +37,7 @@ _MAX_ITEM_CHARS = 160
 _MAX_ITEMS = 8
 
 
-def digest_report(obj: dict, mode: str = "system", include_spotlights: bool = True) -> dict:
+def digest_report(obj: dict, include_spotlights: bool = True) -> dict:
     """Compute verified facts from a nested JSON report. Pure Python.
 
     `include_spotlights` adds readable value previews (employee names,
@@ -60,13 +60,13 @@ def digest_report(obj: dict, mode: str = "system", include_spotlights: bool = Tr
         elif isinstance(value, list):
             if value and all(isinstance(x, dict) for x in value):
                 from app.profile import build_data_profile
+                from app.structure import flatten_record
                 from .deterministic import build_profile_summary
 
-                records = [{k: _scalar(v) for k, v in x.items()} for x in value]
+                records = [flatten_record(x) for x in value]
                 t0 = start()
                 sub = build_profile_summary(
                     build_data_profile(records),
-                    mode,
                     records=records if include_spotlights else None,
                 )
                 mark(f"report: profile section '{key}'", t0)
@@ -97,7 +97,7 @@ def digest_report(obj: dict, mode: str = "system", include_spotlights: bool = Tr
     return {"title_fields": title_fields, "sections": sections}
 
 
-def _deterministic_summary(facts: dict, mode: str) -> SummaryOutput:
+def _deterministic_summary(facts: dict) -> SummaryOutput:
     tf = facts["title_fields"]
     sections = facts["sections"]
     table_names = [s["name"] for s in sections if s["kind"] == "table"]
@@ -176,21 +176,20 @@ def _deterministic_summary(facts: dict, mode: str) -> SummaryOutput:
 
 def build_report_summary(
     obj: dict,
-    mode: str = "system",
     prefer_llm: bool = False,
     llm_service=None,
 ) -> SummaryOutput:
     # LLM digest is always computed without value spotlights: names and
     # raw items stay in Python (shown to the user), never in the prompt.
-    facts = digest_report(obj, mode, include_spotlights=not prefer_llm)
+    facts = digest_report(obj, include_spotlights=not prefer_llm)
 
     if prefer_llm and llm_service is not None:
         try:
             t0 = start()
             out = llm_service.generate_summary_from_profile(
-                {"report_digest": facts}, mode, auto_fallback=True
+                {"report_digest": facts}, auto_fallback=True
             )
-            mark(f"report: LLM narrative (mode={mode})", t0)
+            mark(f"report: LLM narrative", t0)
             return out
         except Exception:
             import logging
@@ -199,4 +198,4 @@ def build_report_summary(
                 "LLM failed for structured report; using deterministic summary"
             )
 
-    return _deterministic_summary(facts, mode)
+    return _deterministic_summary(facts)

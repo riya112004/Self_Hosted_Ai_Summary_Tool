@@ -154,7 +154,7 @@ def _has_date(records: list[dict]) -> bool:
 
 def build_context(
     records: list[dict],
-    n: int = 5,
+    n: int = 20,
     sample_type: str = "mixed",
     metric_col: str | None = None,
     date_col: str | None = None,
@@ -189,6 +189,13 @@ def build_context(
         date_col=date_col,
         seed=seed,
     )
+    # Keep the legacy mixed sample while exposing deterministic boundary and
+    # seeded middle samples to the prompt builder.
+    buckets = {
+        "first": sample_first(records, n),
+        "random": sample_random(records, n, seed),
+        "last": sample_last(records, n),
+    }
 
     return {
         "total_rows": len(records),
@@ -200,5 +207,6 @@ def build_context(
             "date_col": date_col,
             "row_count": len(sample),
             "rows": sample,
+            "buckets": buckets,
         },
     }

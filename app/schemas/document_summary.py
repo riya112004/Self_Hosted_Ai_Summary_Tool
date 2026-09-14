@@ -74,10 +74,3 @@ DOCUMENT_SUMMARY_SCHEMA = """{
     }
   ]
 }"""
-
-
-def document_modes() -> list[str]:
-    """Document-kind modes - single source lives in app.llm.universal.FOCUS."""
-    from app.llm.universal import document_modes as _doc_modes
-
-    return _doc_modes()

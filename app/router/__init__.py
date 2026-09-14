@@ -38,6 +38,25 @@ _EXT_KIND = {
 PDF_MAGIC = b"%PDF-"
 
 
+def _count_delim_outside_quotes(line: str, delim: str) -> int:
+    """Count delimiters, ignoring any that sit inside a double-quoted field."""
+    n = 0
+    in_quotes = False
+    i = 0
+    length = len(line)
+    while i < length:
+        ch = line[i]
+        if ch == '"':
+            if in_quotes and i + 1 < length and line[i + 1] == '"':
+                i += 2  # escaped quote ""
+                continue
+            in_quotes = not in_quotes
+        elif ch == delim and not in_quotes:
+            n += 1
+        i += 1
+    return n
+
+
 def _classify_text(text: str) -> dict:
     lines = [ln for ln in text.splitlines()]
     first = (text.lstrip()[:1]) if text.strip() else ""
@@ -70,7 +89,7 @@ def _classify_text(text: str) -> dict:
     if len(nonblank) >= 2:
         best = None
         for delim in ("\t", ";", "|", ","):
-            counts = [ln.count(delim) for ln in nonblank]
+            counts = [_count_delim_outside_quotes(ln, delim) for ln in nonblank]
             non_zero = [c for c in counts if c > 0]
             if len(non_zero) < len(nonblank) * 0.8:
                 continue

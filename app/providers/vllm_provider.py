@@ -1,6 +1,14 @@
+import logging
+import os
+
 import httpx
 
 from .base import LLMProvider
+
+logger = logging.getLogger(__name__)
+
+# Summary output is bounded (200-400 words) so cap generation tokens.
+# Set VLLM_MAX_TOKENS=0 to disable the cap.
 
 
 class VLLMProvider(LLMProvider):
@@ -9,7 +17,8 @@ class VLLMProvider(LLMProvider):
 
     Supports structured/guided outputs: the JSON schema is sent via
     `guided_json` (vLLM guided decoding) so completions are schema-compliant,
-    which pairs with the Pydantic validation layer.
+    which pairs with the Pydantic validation layer. `max_tokens` caps the
+    output so the model cannot over-generate past a full summary.
     """
 
     name = "vllm"
@@ -23,6 +32,11 @@ class VLLMProvider(LLMProvider):
         self.base_url = base_url.rstrip("/")
         self.model = model
         self.timeout = timeout
+        try:
+            self.max_tokens = int(os.getenv("VLLM_MAX_TOKENS", "500"))
+        except ValueError:
+            logger.warning("ignoring non-integer VLLM_MAX_TOKENS")
+            self.max_tokens = 500
 
     def _post(self, payload: dict) -> dict:
         with httpx.Client(timeout=self.timeout) as client:
@@ -44,6 +58,8 @@ class VLLMProvider(LLMProvider):
             "messages": [{"role": "user", "content": prompt}],
             "temperature": 0.0,
         }
+        if self.max_tokens:
+            payload["max_tokens"] = self.max_tokens
         if json_mode:
             payload["response_format"] = {"type": "json_object"}
             if json_schema is not None:

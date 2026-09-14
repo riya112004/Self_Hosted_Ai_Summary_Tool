@@ -17,7 +17,7 @@ import re
 
 from app.documents import detect_structure, doc_metrics, section_outline, section_anchored_text
 from app.documents.chunker import chunk_by_words, chunk_sections, needs_map_reduce
-from app.llm.universal import build_system_section, document_modes
+from app.llm.universal import build_system_section
 from app.providers import get_provider
 from app.schemas.document_summary import (
     DOCUMENT_SUMMARY_SCHEMA,
@@ -28,17 +28,31 @@ from app.schemas.document_summary import (
 )
 from app.schemas.summary import extract_json
 
-
-DEFAULT_MODE = "general"
-
 # Chunk bands for map-reduce. Bigger chunks = fewer sequential LLM round
-# trips. Overridable per run without code changes.
-_CHUNK_MIN_WORDS = int(os.getenv("DOC_CHUNK_MIN_WORDS", "500"))
-_CHUNK_TARGET_WORDS = int(os.getenv("DOC_CHUNK_TARGET_WORDS", "1200"))
-_CHUNK_MAX_WORDS = int(os.getenv("DOC_CHUNK_MAX_WORDS", "1500"))
+# trips. Values are read when a run starts so dotenv-loaded settings apply.
 
 
-def build_document_prompt(structure, mode: str = DEFAULT_MODE, body: str | None = None) -> str:
+def _env_int(name: str, default: int) -> int:
+    """Read an int env var defensively; empty/invalid values fall back."""
+    raw = os.getenv(name)
+    if not raw:
+        return default
+    try:
+        return int(raw.strip())
+    except (TypeError, ValueError):
+        logging.getLogger(__name__).warning("ignoring non-integer %s=%r", name, raw)
+        return default
+
+
+def _chunk_settings() -> tuple[int, int, int]:
+    return (
+        _env_int("DOC_CHUNK_MIN_WORDS", 500),
+        _env_int("DOC_CHUNK_TARGET_WORDS", 800),
+        _env_int("DOC_CHUNK_MAX_WORDS", 1000),
+    )
+
+
+def build_document_prompt(structure, body: str | None = None) -> str:
     metadata_line = (
         f"- title: {structure.title}\n"
         f"- word_count: {structure.word_count}\n"
@@ -52,7 +66,7 @@ def build_document_prompt(structure, mode: str = DEFAULT_MODE, body: str | None 
     text_block = body if body else section_anchored_text(structure)
 
     return (
-        build_system_section(mode, kind="document")
+        build_system_section(kind="document")
         + "\n\nDETERMINISTIC METADATA\n"
         + metadata_line
         + "\n\nDOCUMENT TEXT\n"
@@ -67,10 +81,10 @@ def build_document_prompt(structure, mode: str = DEFAULT_MODE, body: str | None 
     )
 
 
-def _chunk_summary_prompt(chunk, mode: str = DEFAULT_MODE) -> str:
+def _chunk_summary_prompt(chunk) -> str:
     label = ", ".join(chunk.sections) if chunk.sections else "this part"
     return (
-        build_system_section(mode, kind="document")
+        build_system_section(kind="document")
         + f"\n\nSummarize ONLY the {label} part of the document shown below. "
         "Write a plain-prose summary (~120-150 words) using only facts present "
         "in this chunk. Cover every main point; do not refer to other parts. "
@@ -87,26 +101,24 @@ class DocumentSummarizer:
         self,
         content: str,
         source_type: str | None = None,
-        mode: str = DEFAULT_MODE,
         run_llm: bool = True,
     ) -> DocumentSummary:
         from app.timing import mark, start
 
         t_total = start()
-        mode = mode if mode in document_modes() else DEFAULT_MODE
         t0 = start()
         structure = detect_structure(content, source_type)
         mark("document: detect_structure", t0)
         metadata = SourceMetadata(**doc_metrics(structure))
 
         if not run_llm:
-            result = self._deterministic(structure, metadata, mode)
+            result = self._deterministic(structure, metadata)
         else:
             try:
                 if needs_map_reduce(structure.char_count):
-                    result = self._map_reduce(structure, metadata, mode)
+                    result = self._map_reduce(structure, metadata)
                 else:
-                    result = self._single_pass(structure, metadata, mode)
+                    result = self._single_pass(structure, metadata)
             except Exception as exc:
                 # Mirror the tabular path (_run_summary): an LLM failure must
                 # degrade to a usable deterministic digest, never a 500.
@@ -114,10 +126,10 @@ class DocumentSummarizer:
                     "LLM document summary failed; using deterministic digest"
                 )
                 result = self._deterministic(
-                    structure, metadata, mode, llm_error=str(exc)
+                    structure, metadata, llm_error=str(exc)
                 )
 
-        mark(f"document: total ({mode}, run_llm={run_llm})", t_total)
+        mark(f"document: total (run_llm={run_llm})", t_total)
         return result
 
     # ---------- paths ----------
@@ -126,12 +138,10 @@ class DocumentSummarizer:
         self,
         structure,
         metadata: SourceMetadata,
-        mode: str,
         llm_error: str | None = None,
     ) -> DocumentSummary:
         outline = [f"{'#' * s.level} {s.heading}" for s in structure.sections]
         digest = {
-            "mode": mode,
             "outline": outline or ["(no headings detected)"],
             "first_words": " ".join(section_anchored_text(structure, 3000).split())[:600],
         }
@@ -143,11 +153,11 @@ class DocumentSummarizer:
             source_metadata=metadata,
         )
 
-    def _single_pass(self, structure, metadata: SourceMetadata, mode: str) -> DocumentSummary:
+    def _single_pass(self, structure, metadata: SourceMetadata) -> DocumentSummary:
         from app.timing import mark, start
 
         t0 = start()
-        prompt = build_document_prompt(structure, mode)
+        prompt = build_document_prompt(structure)
         mark("document: build_prompt", t0)
 
         t0 = start()
@@ -159,19 +169,20 @@ class DocumentSummarizer:
         mark("document: apply_result (guards)", t0)
         return result
 
-    def _map_reduce(self, structure, metadata: SourceMetadata, mode: str) -> DocumentSummary:
+    def _map_reduce(self, structure, metadata: SourceMetadata) -> DocumentSummary:
         from app.timing import mark, start
 
+        min_words, target_words, max_words = _chunk_settings()
         chunks = chunk_by_words(
             structure.sections,
-            min_words=_CHUNK_MIN_WORDS,
-            target_words=_CHUNK_TARGET_WORDS,
-            max_words=_CHUNK_MAX_WORDS,
+            min_words=min_words,
+            target_words=target_words,
+            max_words=max_words,
         )
         metadata.chunk_count = len(chunks)
         print(
             f"[step] document: map-reduce with {len(chunks)} chunk(s), "
-            f"{_CHUNK_MIN_WORDS}-{_CHUNK_MAX_WORDS} words each"
+            f"{min_words}-{max_words} words each"
         )
 
         parts = []
@@ -179,7 +190,7 @@ class DocumentSummarizer:
         for i, chunk in enumerate(chunks, start=1):
             t0 = start()
             try:
-                raw = self.provider.chat(_chunk_summary_prompt(chunk, mode), json_mode=False)
+                raw = self.provider.chat(_chunk_summary_prompt(chunk), json_mode=False)
                 if raw.strip():
                     parts.append((chunk, raw.strip()))
                 mark(f"document: LLM chunk {i}/{len(chunks)} ({chunk.word_count} words)", t0)
@@ -296,6 +307,6 @@ def _mentioned(tech: str, structure) -> bool:
     return any(sec.text.casefold().count(ref) for sec in structure.sections) or ref in haystack.casefold()
 
 
-def summarize_document(content, source_type=None, mode=DEFAULT_MODE, run_llm=True) -> DocumentSummary:
+def summarize_document(content, source_type=None, run_llm=True) -> DocumentSummary:
     """Core entry point used by the API layer."""
-    return DocumentSummarizer().summarize(content, source_type, mode, run_llm)
+    return DocumentSummarizer().summarize(content, source_type, run_llm)

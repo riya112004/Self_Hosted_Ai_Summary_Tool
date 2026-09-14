@@ -1,6 +1,6 @@
 """Single universal prompt contract for every input type.
 
-ONE canonical rule set + ONE focus table drive all summary-generation
+ONE canonical rule set + ONE focus set drive all summary-generation
 prompts. Nothing else about "how to summarise" is written anywhere else
 in the live LLM path:
 
@@ -10,121 +10,60 @@ in the live LLM path:
 
 The only difference between input types is WHAT Python hands the LLM
 (the verified data profile for tables, structural metadata + text for
-documents). The prompt prose itself is shared by all of them; the mode
-focus lines are data-driven config, never hand-written per input type.
+documents). The prompt prose itself is shared by all of them.
 """
 
-UNIVERSAL_RULES = """You are a summarization engine.
+UNIVERSAL_RULES = """You are a data analyst.
 
-Generate a concise summary using ONLY the verified information provided
-below. You never receive raw data - only facts computed by Python.
+Analyze the provided data profile.
+
+First determine what the data represents based only on the field names,
+representative values, structure and statistics. Then generate a concise
+factual summary.
 
 Rules:
-1. Do not invent dataset meaning.
-2. Do not infer units unless explicitly provided.
-3. Do not call something anomalous unless it was detected.
-4. Preserve important numerical metrics exactly.
-5. If domain confidence is low, say "domain uncertain".
-6. Separate facts from recommendations.
-7. Never introduce information not present in the supplied facts.
-8. Do not recalculate any statistic - trust the computed numbers.
-9. Return STRICT JSON only (no markdown, no code fences).
-10. Write values directly - never wrap them in {"title": ..., "type": ...}
-    objects, even if the target schema looks nested."""
+1. Do not assign a domain/category without evidence.
+2. Do not use generic categories such as financial, accounting, sales, HR,
+   etc. unless supported by the data.
+3. Use actual field names and representative values as evidence.
+4. Mention the main entity represented by the dataset.
+5. Mention important attributes and meaningful statistics.
+6. Do not invent information - never make claims not present in the profile.
+7. Do not simply list column types.
+8. Avoid generic statements such as "other columns are categorical".
+9. If the domain cannot be confidently identified, describe the dataset
+   neutrally instead of guessing.
+10. Preserve important numerical metrics exactly and never recalculate them.
+11. Return STRICT JSON only (no markdown, no code fences).
+12. Write values directly - never wrap them in {"title": ..., "type": ...}
+    objects, even if the target schema looks nested.
+13. A "REPRESENTATIVE SAMPLE" section, if present, shows a tiny first/random/
+    last excerpt for row-shape context only - never generalize dataset-level
+    claims from the sample; always anchor them in the verified profile."""
 
 FOCUS = {
-    "system": {
-        "data": [
-            "overall structure (rows / columns) and type mix",
-            "data quality facts (missing, duplicates, constant columns)",
-            "key numerical facts and notable statistics",
-            "detected domain and its confidence",
-            "actionable recommendations grounded in the profile",
-        ]
-    },
-    "executive": {
-        "data": [
-            "top-level KPIs and scale",
-            "domain and business-relevant facts",
-            "major risks or quality issues",
-            "clear recommendations",
-        ],
-        "document": [
-            "Overview",
-            "Key Findings",
-            "Business Impact",
-            "Important Recommendations",
-        ],
-    },
-    "financial": {
-        "data": [
-            "anything that looks financial (revenue, cost, margins, amounts)",
-            "financial anomalies if any were detected",
-            "recommendations with financial impact",
-        ]
-    },
-    "technical": {
-        "data": [
-            "schema, types, quality and scale facts",
-            "correlations and patterns",
-            "data engineering caveats (constant columns, imbalance)",
-            "technical recommendations",
-        ],
-        "document": [
-            "Architecture",
-            "Components",
-            "Technology Stack",
-            "Data Flow",
-            "Implementation",
-            "Security",
-            "Performance",
-            "Scalability",
-        ],
-    },
-    "research": {
-        "document": [
-            "Research Objective",
-            "Problem",
-            "Approach",
-            "Key Findings",
-            "Evidence",
-            "Limitations",
-            "Conclusion",
-        ]
-    },
-    "educational": {
-        "document": [
-            "Main Concepts",
-            "Important Terms",
-            "Step-by-Step Explanation",
-            "Key Takeaways",
-        ]
-    },
-    "general": {
-        "document": [
-            "What this is about",
-            "Why it matters",
-            "How it works",
-            "Key recommendations",
-        ]
-    },
+    "data": [
+        "what the data represents (based on field names and values)",
+        "the main entity of the dataset",
+        "important attributes and meaningful statistics",
+        "structure of the data (records, columns, types)",
+    ],
+    "document": [
+        "What this is about",
+        "What it contains",
+        "How it is organised",
+        "Key points and recommendations",
+    ],
 }
 
 
-def focus_for(mode: str, kind: str = "data") -> list[str]:
-    """Focus lines for a mode within an input kind (data | document)."""
-    focuses = FOCUS.get(mode, {})
-    lines = focuses.get(kind) or focuses.get("data") or FOCUS["system"]["data"]
-    return list(lines)
+def focus_for(kind: str = "data") -> list[str]:
+    """Shared focus lines for an input kind (data | document)."""
+    return list(FOCUS.get(kind, FOCUS["data"]))
 
 
-def document_modes() -> list[str]:
-    """All modes that have a document-kind focus."""
-    return [m for m, cfg in FOCUS.items() if "document" in cfg]
-
-
-def build_system_section(mode: str, kind: str = "data") -> str:
-    """Universal system block: the shared rules + the mode's focus lines."""
-    lines = focus_for(mode, kind)
+def build_system_section(kind: str = "data") -> str:
+    """Universal system block: the shared rules + the focus lines."""
+    lines = focus_for(kind)
     focus_block = "\n".join(f"- {item}" for item in lines)
     return f"{UNIVERSAL_RULES}\n\nFocus on:\n{focus_block}"

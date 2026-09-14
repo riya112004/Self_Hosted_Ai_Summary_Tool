@@ -10,9 +10,7 @@ from . import jobs
 from .documents.pdf import extract_pdf_text
 from .llm import LLMService
 from .llm.prompt_builder import build_prompt
-from .modes import list_modes
 from .quality import check_quality
-from .schemas.document_summary import document_modes
 from .schemas.summary import StructuredOutputError
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
@@ -41,7 +39,6 @@ def _normalize_records(records):
 
 class DataRequest(BaseModel):
     data: list
-    summary_type: str = "system"
     run_llm: bool = True
 
 
@@ -52,7 +49,7 @@ class ConvertRequest(BaseModel):
 
 class SampleRequest(BaseModel):
     data: list
-    n: int = 5
+    n: int = 20
     sample_type: str = "mixed"
 
 
@@ -89,21 +86,18 @@ class QueryRequest(BaseModel):
 
 class CsvSummaryRequest(BaseModel):
     data: str
-    summary_type: str = "system"
     run_llm: bool = True
 
 
 class DatabaseSummaryRequest(BaseModel):
     connection: ConnectionConfig | None = None
     statement: QueryStatement
-    summary_type: str = "system"
     run_llm: bool = True
 
 
 class DocumentSummaryRequest(BaseModel):
     content: str
     source_type: str = "auto"
-    summary_type: str = "general"
     run_llm: bool = True
 
 
@@ -115,7 +109,6 @@ class ClassifyRequest(BaseModel):
 class FullTestRequest(BaseModel):
     data: list | dict | str
     source_type: str = "json"
-    summary_type: str = "system"
     run_llm: bool = True
     sanitize: bool = True
     connection: ConnectionConfig | None = None
@@ -125,13 +118,6 @@ class FullTestRequest(BaseModel):
 @app.get("/")
 def home():
     return FileResponse(STATIC_DIR / "index.html")
-
-
-@app.get("/api/v1/modes")
-def modes():
-    return {
-        "modes": list_modes()
-    }
 
 
 @app.post("/api/v1/convert")
@@ -202,33 +188,24 @@ def pipeline(request: DataRequest):
 
 @app.post("/api/v1/prompt")
 def prompt(request: DataRequest):
-    if request.summary_type not in list_modes():
-        raise HTTPException(
-            status_code=400,
-            detail=f"Unknown summary_type: {request.summary_type}. Available: {list_modes()}",
-        )
     return {
-        "prompt": build_prompt(request.data, mode=request.summary_type),
+        "prompt": build_prompt(request.data),
     }
 
 
-def _validate_mode(summary_type: str) -> None:
-    if summary_type not in list_modes():
-        raise HTTPException(
-            status_code=400,
-            detail=f"Unknown summary_type: {summary_type}. Available: {list_modes()}",
-        )
-
-
-def _run_summary(records, summary_type: str, prefer_llm: bool = True) -> dict:
+def _run_summary(records, prefer_llm: bool = True) -> dict:
     """
-    Universal rule: Python computes the verified data profile, then the LLM
-    summarises ONLY that profile. The LLM never sees the raw dataset, so it
-    cannot invent facts ("33 molecular entries"). The profile-based
-    deterministic summary explains the data on its own terms even when the
-    LLM is skipped entirely or fails.
+    Universal rule for tabular data:
+      1. Python profiles the FULL dataset (every row) -> verified statistics
+         covering the middle rows too.
+      2. Python draws a small representative sample (first + random + last)
+         as illustrative context only.
+      3. The LLM summarises ONLY this compact profile + sample - it never
+         sees the raw dataset, so it cannot invent facts ("33 molecular
+         entries"). The deterministic summary explains the data on its own
+         terms even when the LLM is skipped entirely or fails.
     """
-    from .profile import build_data_profile
+    from .profile import build_data_profile, build_representative_sample
     from .summary.deterministic import build_profile_summary
     from .timing import finish, mark, start
 
@@ -243,31 +220,71 @@ def _run_summary(records, summary_type: str, prefer_llm: bool = True) -> dict:
     if prefer_llm:
         try:
             t0 = start()
+            sample = build_representative_sample(records)
             out = llm_service.generate_summary_from_profile(
-                profile, summary_type, auto_fallback=True
+                profile, auto_fallback=True, sample=sample
             )
-            mark(f"_run_summary: LLM summary (mode={summary_type})", t0)
+            mark("_run_summary: LLM summary", t0)
             finish("_run_summary", t_total)
             return out.model_dump()
         except Exception:
             logger.exception("LLM summary failed; using deterministic summary")
 
     t0 = start()
-    out = build_profile_summary(profile, summary_type, records=records)
+    out = build_profile_summary(profile, records=records)
     mark("_run_summary: deterministic summary", t0)
     finish("_run_summary", t_total)
     return out.model_dump()
 
 
-def _handle_summarize(records, summary_type: str, run_llm: bool = True):
+def _run_streamed_csv_summary(csv_text: str, prefer_llm: bool = True) -> dict:
+    """Summarize a large CSV without materialising it as list[dict].
+
+    Same universal rule as ``_run_summary`` (full-data stats + representative
+    sample + ONE LLM call), but the CSV is read in Polars chunks with
+    incremental running aggregates, so a 1M-row file never becomes a giant
+    list of Python dicts.
+    """
+    from .adapters.csv_stream import incremental_profile_csv
+    from .summary.deterministic import build_profile_summary
+    from .timing import finish, mark, start
+
+    t_total = start()
+    t0 = start()
+    result = incremental_profile_csv(csv_text)
+    profile, sample = result["profile"], result["sample"]
+    mark(f"csv_stream: profile ({profile.get('profile_method')})", t0)
+
+    if prefer_llm:
+        try:
+            t0 = start()
+            out = llm_service.generate_summary_from_profile(
+                profile, auto_fallback=True, sample=sample
+            )
+            mark("csv_stream: LLM summary", t0)
+            summary = out.model_dump()
+        except Exception:
+            logger.exception("LLM summary failed; using deterministic summary")
+            summary = build_profile_summary(profile, records=None).model_dump()
+    else:
+        summary = build_profile_summary(profile, records=None).model_dump()
+    finish("_run_streamed_csv_summary", t_total)
+
+    return {
+        "record_count": profile["dataset"]["rows"],
+        "profile_method": profile.get("profile_method"),
+        "summary": summary,
+    }
+
+
+def _handle_summarize(records, run_llm: bool = True):
     """Small requests -> sync response. Large requests -> 202 + job_id."""
-    _validate_mode(summary_type)
 
     def do_summary():
-        return {"summary": _run_summary(records, summary_type, prefer_llm=run_llm)}
+        return {"summary": _run_summary(records, prefer_llm=run_llm)}
 
     if not run_llm:
-        return {"summary": _run_summary(records, summary_type, prefer_llm=False)}
+        return {"summary": _run_summary(records, prefer_llm=False)}
 
     if len(records) <= jobs.SMALL_MAX_ROWS:
         try:
@@ -287,51 +304,54 @@ def _handle_summarize(records, summary_type: str, run_llm: bool = True):
                 ),
             ) from exc
 
-    job_id = jobs.submit(_run_summary, records, summary_type, run_llm)
+    job_id = jobs.submit(_run_summary, records, run_llm)
     return JSONResponse(
         {"job_id": job_id, "status": "pending"},
         status_code=202,
     )
 
 
-def _run_db_summary(connection, statement, summary_type: str, run_llm: bool = True) -> dict:
+def _run_db_summary(connection, statement, run_llm: bool = True) -> dict:
     from .database import query as run_db_query
 
     result = run_db_query(connection, statement)
-    return _run_summary(result["records"], summary_type, prefer_llm=run_llm)
+    return _run_summary(result["records"], prefer_llm=run_llm)
 
 
 @app.post("/api/v1/summarize")
 def summarize(request: DataRequest):
-    return _handle_summarize(request.data, request.summary_type, request.run_llm)
+    return _handle_summarize(request.data, request.run_llm)
 
 
 @app.post("/api/v1/summarize/json")
 def summarize_json(request: DataRequest):
-    return _handle_summarize(request.data, request.summary_type, request.run_llm)
+    return _handle_summarize(request.data, request.run_llm)
 
 
 @app.post("/api/v1/summarize/csv")
 def summarize_csv(request: CsvSummaryRequest):
     from .adapters.csv_adapter import convert_csv
+    from .adapters.csv_stream import should_stream_csv
+
+    if should_stream_csv(request.data):
+        return _run_streamed_csv_summary(request.data, prefer_llm=request.run_llm)
 
     try:
         records = convert_csv(request.data)["records"]
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    return _handle_summarize(records, request.summary_type, request.run_llm)
+    return _handle_summarize(records, request.run_llm)
 
 
 @app.post("/api/v1/summarize/database")
 def summarize_database(request: DatabaseSummaryRequest):
     """Runs in the background: row count is unknown until the query."""
-    _validate_mode(request.summary_type)
     connection = (
         request.connection.model_dump() if request.connection is not None else None
     )
     statement = request.statement.model_dump(exclude_none=True)
     job_id = jobs.submit(
-        _run_db_summary, connection, statement, request.summary_type, request.run_llm
+        _run_db_summary, connection, statement, request.run_llm
     )
     return JSONResponse(
         {"job_id": job_id, "status": "pending"},
@@ -376,11 +396,11 @@ def quality(request: DataRequest):
     return check_quality(request.data)
 
 
-def _build_data_report(records, source_type: str, summary_type: str, run_llm: bool, sanitize: bool) -> dict:
+def _build_data_report(records, source_type: str, run_llm: bool, sanitize: bool) -> dict:
     """Run ONLY the tabular/structured modules - never the document pipeline."""
     from .analytics import compute_analytics
     from .pipeline import process as run_pipeline
-    from .profile import build_data_profile
+    from .profile import build_data_profile, build_representative_sample
     from .profiling.profiler import profile_dataset
     from .profiling.schema_detector import detect_schema
     from .sampling.representative import build_context
@@ -406,16 +426,14 @@ def _build_data_report(records, source_type: str, summary_type: str, run_llm: bo
 
     report["meta"] = {
         "source_type": source_type,
-        "summary_type": summary_type,
         "record_count": len(records),
     }
 
-    section("modes", list_modes)
     section("schema", lambda: detect_schema(records))
     section("quality", lambda: check_quality(records))
     section("profile", lambda: profile_dataset(records))
     section("analytics", lambda: compute_analytics(records))
-    section("sample", lambda: build_context(records, n=5))
+    section("sample", lambda: build_context(records, n=20))
 
     def pipeline_section():
         result = run_pipeline(records)
@@ -429,7 +447,7 @@ def _build_data_report(records, source_type: str, summary_type: str, run_llm: bo
     section("provider", lambda: getattr(llm_service.provider, "name", "unknown"))
     from .llm.prompt_builder import build_prompt
 
-    section("prompt", lambda: build_prompt(records, mode=summary_type))
+    section("prompt", lambda: build_prompt(records))
 
     if sanitize:
         def sanitize_section():
@@ -459,19 +477,21 @@ def _build_data_report(records, source_type: str, summary_type: str, run_llm: bo
         def llm_summary_section():
             try:
                 return llm_service.generate_summary_from_profile(
-                    build_data_profile(records), summary_type, auto_fallback=True
+                    build_data_profile(records),
+                    auto_fallback=True,
+                    sample=build_representative_sample(records),
                 ).model_dump()
             except Exception as exc:
                 report["errors"]["summary"] = (
                     f"LLM unavailable; used deterministic fallback: {exc}"
                 )
-                return _run_summary(records, summary_type, prefer_llm=False)
+                return _run_summary(records, prefer_llm=False)
 
         section("summary", llm_summary_section)
     else:
         section(
             "summary",
-            lambda: _run_summary(records, summary_type, prefer_llm=False),
+            lambda: _run_summary(records, prefer_llm=False),
         )
 
     return report
@@ -481,21 +501,18 @@ def _run_document_auto(content: str, source_format, request, detection: dict) ->
     from .llm.document_service import summarize_document as run_doc_summary
     from .timing import mark, start
 
-    mode = request.summary_type if request.summary_type in document_modes() else "general"
     t0 = start()
     result = run_doc_summary(
         content,
         source_type=source_format,
-        mode=mode,
         run_llm=request.run_llm,
     )
-    mark(f"_run_document_auto: document summary (mode={mode}, run_llm={request.run_llm})", t0)
+    mark(f"_run_document_auto: document summary (run_llm={request.run_llm})", t0)
     return {
         "input_type": "document",
         "document_type": result.document_understanding.document_type or "document",
         "detection": detection,
         "pipeline": "document",
-        "mode": mode,
         "run_llm": request.run_llm,
         "summary": result.model_dump(),
     }
@@ -528,7 +545,6 @@ class AutoSummaryRequest(BaseModel):
     data_b64: str | None = None
     filename: str | None = None
     source_type: str | None = None
-    summary_type: str = "system"
     run_llm: bool = True
     sanitize: bool = True
     connection: ConnectionConfig | None = None
@@ -577,8 +593,7 @@ def summarize_auto(request: AutoSummaryRequest):
             ) from exc
         mark("summarize/auto: database query", t0)
         records = result["records"]
-        mode = request.summary_type if request.summary_type in list_modes() else "system"
-        summary = _run_summary(records, mode, prefer_llm=request.run_llm)
+        summary = _run_summary(records, prefer_llm=request.run_llm)
         finish("summarize/auto", t_total)
         return {
             "input_type": "structured",
@@ -589,7 +604,6 @@ def summarize_auto(request: AutoSummaryRequest):
                 "reason": "database query results",
             },
             "pipeline": "data",
-            "mode": mode,
             "record_count": len(records),
             "run_llm": request.run_llm,
             "summary": summary,
@@ -644,14 +658,12 @@ def summarize_auto(request: AutoSummaryRequest):
                 "confidence": 1.0,
                 "reason": f"{subtype} workbook detected",
             }
-            mode = request.summary_type if request.summary_type in list_modes() else "system"
-            summary = _run_summary(records, mode, prefer_llm=request.run_llm)
+            summary = _run_summary(records, prefer_llm=request.run_llm)
             finish("summarize/auto", t_total)
             return {
                 "input_type": "tabular",
                 "detection": detection,
                 "pipeline": "data",
-                "mode": mode,
                 "record_count": len(records),
                 "summary": summary,
             }
@@ -683,10 +695,8 @@ def summarize_auto(request: AutoSummaryRequest):
 
         if isinstance(parsed_content, dict) and is_nested_report(parsed_content):
             t0 = start()
-            mode = request.summary_type if request.summary_type in list_modes() else "system"
             summary = build_report_summary(
                 parsed_content,
-                mode=mode,
                 prefer_llm=request.run_llm,
                 llm_service=llm_service,
             ).model_dump()
@@ -701,7 +711,6 @@ def summarize_auto(request: AutoSummaryRequest):
                     "reason": "nested JSON report detected (object with array/object values)",
                 },
                 "pipeline": "report",
-                "mode": mode,
                 "run_llm": request.run_llm,
                 "summary": summary,
             }
@@ -709,6 +718,20 @@ def summarize_auto(request: AutoSummaryRequest):
         t0 = start()
         records = _coerce_records(kind, content)
         if kind == "tabular":
+            from .adapters.csv_stream import should_stream_csv
+
+            if isinstance(records, str) and should_stream_csv(records):
+                streamed = _run_streamed_csv_summary(records, prefer_llm=request.run_llm)
+                finish("summarize/auto", t_total)
+                return {
+                    "input_type": kind,
+                    "detection": detection,
+                    "pipeline": "data",
+                    "record_count": streamed["record_count"],
+                    "profile_method": streamed["profile_method"],
+                    "summary": streamed["summary"],
+                }
+
             from .adapters.csv_adapter import convert_csv
 
             try:
@@ -716,14 +739,12 @@ def summarize_auto(request: AutoSummaryRequest):
             except ValueError as exc:
                 raise HTTPException(status_code=400, detail=str(exc)) from exc
         mark("summarize/auto: coerce -> records", t0)
-        mode = request.summary_type if request.summary_type in list_modes() else "system"
-        summary = _run_summary(records, mode, prefer_llm=request.run_llm)
+        summary = _run_summary(records, prefer_llm=request.run_llm)
         finish("summarize/auto", t_total)
         return {
             "input_type": kind,
             "detection": detection,
             "pipeline": "data",
-            "mode": mode,
             "record_count": len(records),
             "summary": summary,
         }
@@ -751,7 +772,6 @@ def full_test(request: FullTestRequest):
     report = _build_data_report(
         request.data,
         source_type=request.source_type,
-        summary_type=request.summary_type,
         run_llm=request.run_llm,
         sanitize=request.sanitize,
     )
@@ -808,7 +828,6 @@ MAX_UPLOAD_BYTES = 20 * 1024 * 1024  # 20 MB
 @app.post("/api/v1/upload")
 def upload_summarize(
     file: UploadFile = File(...),
-    summary_type: str = Form("system"),
     run_llm: bool = Form(False),
 ):
     """
@@ -847,6 +866,20 @@ def upload_summarize(
             except UnicodeDecodeError as exc:
                 raise HTTPException(status_code=400, detail="Unsupported file encoding") from exc
 
+        if not name.endswith((".json", ".jsonl")):
+            from .adapters.csv_stream import should_stream_csv
+
+            if should_stream_csv(text):
+                streamed = _run_streamed_csv_summary(text, prefer_llm=run_llm)
+                finish("upload", t_total)
+                return {
+                    "source_type": "csv",
+                    "file_name": file.filename,
+                    "record_count": streamed["record_count"],
+                    "profile_method": streamed["profile_method"],
+                    "summary": streamed["summary"],
+                }
+
         t0 = start()
         try:
             parsed = load_records_from_text(file.filename or "", text)
@@ -854,8 +887,7 @@ def upload_summarize(
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         mark("upload: parse records from file", t0)
 
-    _validate_mode(summary_type)
-    summary = _run_summary(parsed["records"], summary_type, prefer_llm=run_llm)
+    summary = _run_summary(parsed["records"], prefer_llm=run_llm)
     finish("upload", t_total)
 
     return {
@@ -872,7 +904,6 @@ def classify_input(request: ClassifyRequest):
     from .router import classify as run_classifier
 
     result = run_classifier(request.data, request.source_type)
-    result["known_modes"] = document_modes()
     return result
 
 
@@ -886,31 +917,17 @@ def summarize_document_endpoint(request: DocumentSummaryRequest):
     """
     from .llm.document_service import summarize_document as run_doc_summary
 
-    from app.schemas.document_summary import document_modes as _doc_modes
-
-    mode = request.summary_type
-    if mode not in _doc_modes():
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                f"Unknown document summary_type: {mode}. "
-                f"Available: {_doc_modes()}"
-            ),
-        )
-
     source_format = (
         None if request.source_type in ("auto", "document") else request.source_type
     )
     result = run_doc_summary(
         request.content,
         source_type=source_format,
-        mode=mode,
         run_llm=request.run_llm,
     )
 
     return {
         "input_type": "document",
         "document_type": result.document_understanding.document_type or "document",
-        "mode": mode,
         "summary": result.model_dump(),
     }

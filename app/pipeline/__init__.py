@@ -5,7 +5,7 @@ from . import hierarchy
 def process(
     records: list[dict],
     summarize=None,
-    n: int = 5,
+    n: int = 20,
     max_groups: int = 10,
 ) -> dict:
     """

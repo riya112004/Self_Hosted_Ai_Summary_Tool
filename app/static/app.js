@@ -7,7 +7,7 @@ const els = {
   browseBtn: document.getElementById("browseBtn"),
   dataInput: document.getElementById("dataInput"),
   fileHint: document.getElementById("fileHint"),
-  summaryType: document.getElementById("summaryType"),
+  bulletPoints: document.getElementById("bulletPoints"),
   analyzeBtn: document.getElementById("analyzeBtn"),
   outputPanel: document.getElementById("outputPanel"),
   errors: document.getElementById("errors"),
@@ -107,7 +107,6 @@ async function analyze() {
   const started = performance.now();
   try {
     const common = {
-      summary_type: els.summaryType.value,
       run_llm: true,
     };
     let payload;
@@ -208,11 +207,21 @@ function render(report, seconds) {
   if (!text) text = "(no summary text returned)";
 
   els.outTitle.textContent = title;
-  els.outText.textContent = text;
+  els.outText.replaceChildren();
+  if (els.bulletPoints.checked) {
+    const items = text.split(/\n+/).map((line) => line.trim()).filter(Boolean);
+    const list = el("ul", "summary-bullets");
+    for (const item of items.length ? items : ["(no summary text returned)"]) {
+      list.append(el("li", null, item));
+    }
+    els.outText.append(list);
+  } else {
+    els.outText.textContent = text;
+  }
   const det = report.detection || {};
   els.outMeta.textContent =
     `${report.input_type} · ${report.pipeline}${det.subtype ? " (" + det.subtype + ")" : ""}` +
-    ` · mode ${report.mode} · ${seconds.toFixed(1)}s`;
+    ` · ${seconds.toFixed(1)}s`;
 }
 
 els.analyzeBtn.addEventListener("click", analyze);

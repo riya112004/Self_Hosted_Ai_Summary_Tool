@@ -12,7 +12,7 @@ class LLMService:
         self.provider = provider or get_provider()
 
     def generate_summary(
-        self, data, mode: str = "system", strict: bool = True, auto_fallback: bool = False
+        self, data, strict: bool = True, auto_fallback: bool = False
     ) -> SummaryOutput:
         """
         Run the full pipeline.
@@ -21,7 +21,7 @@ class LLMService:
         lenient mode once when strict validation fails, so a slightly
         malformed answer still produces a usable summary.
         """
-        prompt = build_prompt(data, mode=mode)
+        prompt = build_prompt(data)
         json_schema = SummaryOutput.model_json_schema()
         text = self.provider.chat(prompt, json_mode=True, json_schema=json_schema)
         try:
@@ -36,21 +36,28 @@ class LLMService:
     def generate_summary_from_profile(
         self,
         profile: dict,
-        mode: str = "system",
         auto_fallback: bool = False,
+        sample: dict | None = None,
     ) -> SummaryOutput:
         """
         Profile-first summarization: the only thing the LLM sees is the
         verified python-computed data profile - never the raw dataset.
+        `sample` is an optional compact first/random/last excerpt used as
+        illustrative context alongside the verified statistics.
         """
-        from app.profile.prompt import build_profile_prompt
+        from app.llm.budget import build_budgeted_prompt
+        from app.llm.guard import apply_fact_guard
 
-        prompt = build_profile_prompt(profile, mode=mode)
+        prompt, fitted_profile, fitted_sample = build_budgeted_prompt(
+            profile, sample=sample
+        )
         json_schema = SummaryOutput.model_json_schema()
         text = self.provider.chat(prompt, json_mode=True, json_schema=json_schema)
         try:
-            return parse_summary(text, strict=True)
+            out = parse_summary(text, strict=True)
         except StructuredOutputError:
             if auto_fallback:
-                return parse_summary(text, strict=False)
-            raise
+                out = parse_summary(text, strict=False)
+            else:
+                raise
+        return apply_fact_guard(out, fitted_profile, sample=fitted_sample)

@@ -38,18 +38,10 @@
       <span class="file-hint" id="fileHint"></span>
 
       <div class="controls">
-        <div class="control">
-          <label for="summaryType">Output type</label>
-          <select id="summaryType">
-            <option value="general" selected>general</option>
-            <option value="executive">executive</option>
-            <option value="technical">technical</option>
-            <option value="financial">financial</option>
-            <option value="research">research</option>
-            <option value="educational">educational</option>
-            <option value="system">system</option>
-          </select>
-        </div>
+        <label class="check-control" for="bulletPoints">
+          <input type="checkbox" id="bulletPoints" />
+          <span>Show summary as bullet points</span>
+        </label>
       </div>
 
       <button type="button" class="btn primary big" id="analyzeBtn">▶ Summarize</button>
@@ -65,7 +57,7 @@
 
       <div class="card summary-card">
         <h3 id="outTitle">Summary</h3>
-        <p class="exec" id="outText"></p>
+        <div class="exec" id="outText"></div>
         <p class="hint" id="outMeta"></p>
       </div>
     </section>
@@ -74,6 +66,6 @@
   <!-- Toast -->
   <div id="toast" class="toast" hidden></div>
 
-  <script src="/static/app.js"></script>
+  <script src="/static/app.js?v=2"></script>
 </body>
 </html>

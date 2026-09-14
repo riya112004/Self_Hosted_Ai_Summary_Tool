@@ -49,7 +49,7 @@ celery_app.conf.update(
 )
 
 
-def _run_summary(records, summary_type: str, run_llm: bool = True) -> dict:
+def _run_summary(records, run_llm: bool = True) -> dict:
     from .timing import finish, mark, start
 
     t_total = start()
@@ -62,46 +62,47 @@ def _run_summary(records, summary_type: str, run_llm: bool = True) -> dict:
         mark("worker: build data profile", t0)
 
         t0 = start()
-        out = build_profile_summary(profile, summary_type, records=records).model_dump()
+        out = build_profile_summary(profile, records=records).model_dump()
         mark("worker: deterministic summary", t0)
         finish("worker._run_summary", t_total)
         return out
 
     from .llm import LLMService
-    from .profile import build_data_profile
+    from .profile import build_data_profile, build_representative_sample
 
     t0 = start()
     profile = build_data_profile(records)
     mark("worker: build data profile", t0)
 
     t0 = start()
+    sample = build_representative_sample(records)
     summary = LLMService().generate_summary_from_profile(
-        profile, summary_type, auto_fallback=True
+        profile, auto_fallback=True, sample=sample
     )
-    mark(f"worker: LLM summary (mode={summary_type})", t0)
+    mark("worker: LLM summary", t0)
     finish("worker._run_summary", t_total)
     return summary.model_dump()
 
 
-def _run_db_summary(connection, statement, summary_type: str, run_llm: bool = True) -> dict:
+def _run_db_summary(connection, statement, run_llm: bool = True) -> dict:
     from .database import query as run_db_query
 
     result = run_db_query(connection, statement)
-    return _run_summary(result["records"], summary_type, run_llm)
+    return _run_summary(result["records"], run_llm)
 
 
 @celery_app.task(name="summarize_records")
-def task_summarize_records(records, summary_type: str, run_llm: bool = True) -> dict:
+def task_summarize_records(records, run_llm: bool = True) -> dict:
     """Profiler -> LLM -> validator -> summary dict (any row count)."""
-    return _run_summary(records, summary_type, run_llm)
+    return _run_summary(records, run_llm)
 
 
 @celery_app.task(name="summarize_database")
 def task_summarize_database(
-    connection, statement, summary_type: str, run_llm: bool = True
+    connection, statement, run_llm: bool = True
 ) -> dict:
     """Read-only query -> profiler -> LLM -> validator -> summary dict."""
-    return _run_db_summary(connection, statement, summary_type, run_llm)
+    return _run_db_summary(connection, statement, run_llm)
 
 
 # Maps plain callable names (from the API layer) to registered celery tasks.

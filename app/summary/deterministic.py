@@ -146,171 +146,93 @@ def _recommendations(analytics: dict, quality: dict) -> list[str]:
 
 
 def build_profile_summary(
-    profile: dict, mode: str = "system", records: list[dict] | None = None
+    profile: dict, records: list[dict] | None = None
 ) -> SummaryOutput:
     """Deterministic SummaryOutput built from the verified data profile.
 
-    Explains the dataset on its own terms: column meaning, value ranges,
-    dominant categories, correlations, outliers - no LLM involved. Optionally
-    takes the (normalised) records to add readable value spotlights - these
-    stay in Python and are shown to the user; they never reach the LLM.
+    Explains what the raw data actually is in plain language: semantic
+    dataset kind, per-column meaning, value categories and notable values -
+    no LLM involved. Optionally takes the (normalised) records to add
+    readable value spotlights - these stay in Python and are shown to the
+    user; they never reach the LLM.
     """
 
     def _num(v, nd=2):
         return _clean(v, nd) if isinstance(v, (int, float)) else v
 
+    def _type_count(v):
+        # streamed profiles store column-name lists here; in-memory stores counts
+        return len(v) if isinstance(v, (list, tuple, set)) else (v or 0)
+
     dataset = profile.get("dataset") or {}
     rows = dataset.get("rows", 0)
     cols = dataset.get("columns", 0)
     dt = profile.get("data_types") or {}
-    stats = profile.get("statistics") or {}
-    important = stats.get("important_numeric_columns") or []
-    corr = profile.get("correlations") or {}
-    anomalies = profile.get("anomalies") or {}
+    _stats = profile.get("statistics") or {}
     quality = profile.get("quality") or {}
     domain = profile.get("domain") or {}
-    cat_report = profile.get("categorical_breakdown") or []
-    imbalance = profile.get("class_imbalance") or []
-    total_out = anomalies.get("total_potential_outliers", 0)
 
-    # ---- narrative -------------------------------------------------------
-    parts = [f"This dataset has {rows} record(s) across {cols} column(s)."]
+    semantics = profile.get("semantics") or {}
+    kind = semantics.get("kind") or "tabular"
+    summary_text = semantics.get("summary") or (
+        f"This dataset has {rows} record(s) across {cols} column(s)."
+    )
+    categories = semantics.get("categories") or []
+    roles = semantics.get("column_roles") or {}
+    col_roles = [
+        f"{col.replace('_', ' ')} - {roles[col].replace('_', ' ')}"
+        for col in (profile.get("columns") or [])[:20] if col in roles
+    ]
+    findings = list(categories)
+    if col_roles:
+        findings += ["Field meanings: " + "; ".join(col_roles) + "."]
+
+    exec_parts = [summary_text]
+    value_spotlights = _value_spotlights(records)
+    if value_spotlights:
+        exec_parts.append("Notable values: " + "; ".join(value_spotlights) + ".")
+    if domain.get("label") and domain.get("label") != "Unknown" and domain.get("confidence", 0) >= 0.6:
+        exec_parts.append(
+            f"The column names suggest the domain '{domain['label']}'."
+        )
+    missing = quality.get("missing_values_total", 0)
+    if missing:
+        exec_parts.append(f"There are {missing} missing value(s) to be aware of.")
+
     type_parts = []
     for label, key in (
         ("numeric", "numeric"), ("categorical", "categorical"), ("text", "text"),
         ("date", "datetime"), ("boolean", "boolean"),
     ):
-        n = dt.get(key, 0)
+        n = _type_count(dt.get(key, 0))
         if n:
             type_parts.append(f"{n} {label}")
     if type_parts:
-        parts.append("Columns break down into " + ", ".join(type_parts) + ".")
+        exec_parts.append("Columns break down into " + ", ".join(type_parts) + ".")
 
-    if important[:3]:
-        chunks = []
-        for c in important[:3]:
-            name, lo, hi = c["column"], c.get("min"), c.get("max")
-            extra = f", average {_num(c.get('mean'))}"
-            if c.get("median") is not None and c.get("mean") != c.get("median"):
-                extra += f", median {_num(c.get('median'))}"
-            chunks.append(f"{name} ranges {_num(lo)} to {_num(hi)}{extra}")
-        parts.append("Key numeric metrics: " + "; ".join(chunks) + ".")
-
-    if cat_report:
-        pieces = []
-        for c in cat_report[:3]:
-            topv = (c.get("top_values") or [{}])[0]
-            pieces.append(
-                f"{c['column']} has {c.get('unique')} unique values, most common "
-                f"'{topv.get('value', '')}'"
-            )
-        parts.append("Categories: " + "; ".join(pieces) + ".")
-
-    value_spotlights = _value_spotlights(records)
-    if value_spotlights:
-        parts.append("Notable values: " + "; ".join(value_spotlights) + ".")
-
-    if total_out:
-        parts.append(f"IQR screening flagged {total_out} potential outlier value(s).")
-    missing = quality.get("missing_values_total", 0)
-    if missing:
-        parts.append(f"There are {missing} missing value(s) to be aware of.")
-    dup = quality.get("duplicate_rows", 0)
-    if dup:
-        parts.append(f"{dup} duplicate row(s) were detected.")
-    if domain.get("label") and domain.get("label") != "Unknown" and domain.get("confidence", 0) >= 0.6:
-        parts.append(
-            f"Column names suggest the domain '{domain['label']}' "
-            f"(confidence {_num(domain.get('confidence'), 3)})."
-        )
-
-    # ---- key findings -----------------------------------------------------
-    findings = []
-    for c in important[:5]:
-        findings.append(
-            f"{c['column']} ranges {_num(c.get('min'))} to {_num(c.get('max'))} "
-            f"(average {_num(c.get('mean'))}, median {_num(c.get('median'))})."
-        )
-    for c in cat_report[:4]:
-        topv = (c.get("top_values") or [{}])[0]
-        findings.append(
-            f"{c['column']} is dominated by '{topv.get('value', '-')}' "
-            f"({c.get('unique')} unique values)."
-        )
-    for it in (corr.get("top_positive") or [])[:2]:
-        fs = it.get("features") or []
-        findings.append(f"{fs[0]} and {fs[1]} correlate ({_num(it.get('value'), 3)}).")
-    for it in (corr.get("top_negative") or [])[:2]:
-        fs = it.get("features") or []
-        findings.append(f"{fs[0]} and {fs[1]} move in opposite directions ({_num(it.get('value'), 3)}).")
-    for c in (anomalies.get("top_columns") or [])[:4]:
-        findings.append(
-            f"{c['column']} has {c['outliers']} potential outlier(s) "
-            f"({round((c.get('share') or 0) * 100)}% of rows)."
-        )
-    for it in imbalance[:3]:
-        findings.append(
-            f"{it['column']} is imbalanced - {round((it.get('dominant_class_share') or 0) * 100)}% "
-            f"of rows fall in one class."
-        )
-    for spotlight in value_spotlights:
-        findings.append(spotlight)
-    if not findings:
-        findings.append("No strong patterns detected - the columns are relatively uniform.")
-
-    # ---- recommendations --------------------------------------------------
-    recs = []
-    for c in (anomalies.get("top_columns") or [])[:4]:
-        recs.append(f"Review the {c['outliers']} flagged value(s) in {c['column']}.")
-    if missing:
-        recs.append("Inspect the missing values before drawing conclusions.")
-    dup = quality.get("duplicate_rows", 0)
-    if dup:
-        recs.append("Consider de-duplicating the data before deeper analysis.")
-    for c in (quality.get("constant_columns") or [])[:3]:
-        recs.append(f"'{c}' is constant and adds no signal - safe to exclude.")
-    for it in (corr.get("top_positive") or [])[:1]:
-        fs = it.get("features") or []
-        recs.append(f"{fs[0]} and {fs[1]} carry almost the same information - one may be redundant.")
-    if not recs:
-        recs.append("Enable 'run_llm' for a narrative, interpretation-driven explanation.")
-
-    # ---- structured fields ------------------------------------------------
     calculated = {
         "row_count": rows,
         "column_count": cols,
-        "numeric_columns": dt.get("numeric", 0),
-        "categorical_columns": dt.get("categorical", 0),
+        "dataset_kind": kind,
+        "numeric_columns": _type_count(dt.get("numeric", 0)),
+        "categorical_columns": _type_count(dt.get("categorical", 0)),
         "missing_values_total": missing,
-        "duplicate_rows": dup,
-        "constant_column_count": len(quality.get("constant_columns") or []),
-        "potential_outliers": total_out,
-        **{
-            f"{c['column']}_outliers": c["outliers"]
-            for c in (anomalies.get("top_columns") or [])
-        },
     }
     if domain.get("label") and domain.get("label") != "Unknown":
         calculated["domain"] = f"{domain['label']} ({_num(domain.get('confidence'), 3)})"
 
-    anomaly_lines = [
-        f"{c['column']}: {c['outliers']} outlier(s) "
-        f"({round((c.get('share') or 0) * 100)}% of rows)"
-        for c in (anomalies.get("top_columns") or [])[:8]
-    ]
-
     return SummaryOutput(
-        title=f"{mode} summary - {rows} records, {cols} columns",
-        executive_summary=" ".join(parts),
+        title=f"general summary - {rows} records, {cols} columns",
+        executive_summary=" ".join(exec_parts),
         key_findings=findings,
         calculated_metrics={k: _clean(v) for k, v in calculated.items()},
-        anomalies_detected=anomaly_lines,
-        recommendations=recs,
+        anomalies_detected=[],
+        recommendations=[],
     )
 
 
 def build_fast_summary(
-    records: list[dict], mode: str = "system"
+    records: list[dict]
 ) -> SummaryOutput:
     """Deterministic SummaryOutput - no LLM involved, never raises."""
     schema = detect_schema(records)
@@ -323,7 +245,7 @@ def build_fast_summary(
         quality = future_quality.result()
         analytics = future_analytics.result()
 
-    title = f"{mode} summary - {len(records)} records, {len(schema)} fields"
+    title = f"general summary - {len(records)} records, {len(schema)} fields"
     calculated = {
         "row_count": len(records),
         "column_count": len(schema),

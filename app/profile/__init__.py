@@ -1,11 +1,15 @@
 """Universal CSV / data profiling pipeline.
 
-Every number in the profile is computed by Python (Polars). The LLM never
-sees the raw dataset - it only receives this verified, compact profile and
-is told to explain it. This is what prevents invented facts ("33 molecular
-entries", "atomic mass units") from leaking into summaries.
+Every number in the profile is computed by Python (Polars) from the FULL
+dataset - so the middle rows' patterns are captured by the statistics, not
+by any sample.  The LLM never receives the raw dataset: it only gets this
+verified compact profile (plus a tiny first/random/last representative
+excerpt for row-shape context) and is told to explain it.  This prevents
+invented facts ("33 molecular entries", "atomic mass units") from leaking
+into summaries.
 
-    CSV / Excel -> build_data_profile(records) -> LLM <- only this profile
+    CSV / Excel -> build_data_profile(records) -> verified profile
+                                + build_representative_sample(records) -> LLM
 """
 
 import math
@@ -28,6 +32,8 @@ def _round(value, nd: int = 4):
 
 
 def _norm_records(records) -> list[dict]:
+    from app.structure import flatten_record
+
     if records is None:
         return []
     if not isinstance(records, list):
@@ -35,7 +41,7 @@ def _norm_records(records) -> list[dict]:
     out = []
     for r in records:
         if isinstance(r, dict):
-            out.append(r)
+            out.append(flatten_record(r))
         else:
             out.append({"value": r})
     return out
@@ -78,6 +84,7 @@ def build_data_profile(
         "data_types": {"numeric": 0, "categorical": 0, "text": 0, "datetime": 0, "boolean": 0},
         "quality": {},
         "column_categories": {},
+        "semantics": {},
         "statistics": {},
         "correlations": {},
         "categorical_breakdown": [],
@@ -128,6 +135,11 @@ def build_data_profile(
         return items[:list_preview] + (
             [f"... {len(items) - list_preview} more"] if len(items) > list_preview else []
         )
+
+    def _build_semantics(cols: list[str]) -> dict:
+        from .semantics import build_semantics
+
+        return build_semantics(cols)
 
     # ---- 4. data quality ---------------------------------------------------
     null_counts = df.null_count().row(0)
@@ -311,6 +323,7 @@ def build_data_profile(
             "datetime": _preview(datetime_cols),
             "boolean": _preview(boolean_cols),
         },
+        "semantics": _build_semantics(columns),
         "statistics": {
             "important_numeric_columns": important,
             "global_min": {"value": global_min[0], "column": global_min[1]} if global_min else None,
@@ -328,4 +341,57 @@ def build_data_profile(
         },
         "domain": detect_domain(columns),
         "patterns": patterns,
+    }
+
+
+# ---- representative sample for LLM context ----------------------------------
+# The full-data profile captures every column's statistics including the middle
+# rows.  A small labelled sample (first / random / last) gives the LLM a feel
+# for the actual row shapes without flooding the prompt with raw data.
+
+_SAMPLE_STR_MAX = 60
+_SAMPLE_PER_BUCKET = 5
+_SAMPLE_SEED = 42
+
+
+def _compact_sample_row(row: dict) -> dict:
+    compact = {}
+    for key, value in row.items():
+        if isinstance(value, str) and len(value) > _SAMPLE_STR_MAX:
+            compact[key] = value[:_SAMPLE_STR_MAX] + "…"
+        else:
+            compact[key] = value
+    return compact
+
+
+def build_representative_sample(
+    records,
+    per_bucket: int = _SAMPLE_PER_BUCKET,
+    seed: int = _SAMPLE_SEED,
+) -> dict:
+    """Small first / random / last excerpt of the dataset.
+
+    Context for the LLM only.  Middle-data patterns are captured by the
+    full-data statistics (build_data_profile), not by these rows.  The
+    "random" bucket is seeded so the sample is reproducible.
+    """
+    rows = _norm_records(records)
+    if not rows:
+        return {"total_rows": 0, "per_bucket": per_bucket, "buckets": {}}
+
+    from app.sampling.representative import (
+        sample_first,
+        sample_last,
+        sample_random,
+    )
+
+    buckets = {
+        "first": [_compact_sample_row(r) for r in sample_first(rows, per_bucket)],
+        "random": [_compact_sample_row(r) for r in sample_random(rows, per_bucket, seed)],
+        "last": [_compact_sample_row(r) for r in sample_last(rows, per_bucket)],
+    }
+    return {
+        "total_rows": len(rows),
+        "per_bucket": per_bucket,
+        "buckets": buckets,
     }

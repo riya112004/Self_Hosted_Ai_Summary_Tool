@@ -15,11 +15,20 @@ def get_provider(name: str | None = None) -> LLMProvider:
     load_dotenv()
     name = name or os.getenv("LLM_PROVIDER", "ollama")
 
+    def _flt(key: str, default: float) -> float:
+        raw = os.getenv(key)
+        if not raw:
+            return default
+        try:
+            return float(raw.strip())
+        except (TypeError, ValueError):
+            return default
+
     if name == "ollama":
         return OllamaProvider(
-            model=os.getenv("OLLAMA_MODEL", "qwen3:1.7b"),
+            model=os.getenv("OLLAMA_MODEL", "qwen3:0.6b"),
             host=os.getenv("OLLAMA_HOST", "http://127.0.0.1:11434"),
-            timeout=float(os.getenv("OLLAMA_TIMEOUT", "600")),
+            timeout=_flt("OLLAMA_TIMEOUT", 600.0),
         )
     if name == "vllm":
         return VLLMProvider(
