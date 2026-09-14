@@ -9,9 +9,6 @@ Two backends, switchable via JOBS_BACKEND:
   - threads (default, zero deps)  - in-process daemon thread + in-memory store
   - celery (production grade)     - Redis broker -> Celery worker -> MongoDB results
 
-The LLM NEVER executes database queries: both paths go through the same
-read-only gate (app.database.query).
-
 When JOBS_BACKEND=celery but the broker is unreachable, submit() falls back
 to the thread backend so the server keeps working during local dev.
 """

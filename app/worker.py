@@ -2,17 +2,9 @@
 Celery + Redis background workers.
 
     FastAPI -> Redis Queue -> Celery Worker -> Profiler -> LLM -> Validator
-                                       |
-                                       v
-                                  MongoDB (results)
 
 Why: a 100,000-row summary must not hold an HTTP request open for minutes.
 Large POSTs return a job_id immediately; the worker does the heavy lifting.
-
-Pipeline invariants still hold:
-  - the LLM NEVER executes database queries (worker uses the same read-only
-    app.database.query gate).
-  - results are stored in MongoDB (result backend), not PostgreSQL.
 
 Run the worker (Windows-safe pool):
     celery -A app.worker.celery_app worker --loglevel=info --pool=solo
@@ -84,31 +76,15 @@ def _run_summary(records, run_llm: bool = True) -> dict:
     return summary.model_dump()
 
 
-def _run_db_summary(connection, statement, run_llm: bool = True) -> dict:
-    from .database import query as run_db_query
-
-    result = run_db_query(connection, statement)
-    return _run_summary(result["records"], run_llm)
-
-
 @celery_app.task(name="summarize_records")
 def task_summarize_records(records, run_llm: bool = True) -> dict:
     """Profiler -> LLM -> validator -> summary dict (any row count)."""
     return _run_summary(records, run_llm)
 
 
-@celery_app.task(name="summarize_database")
-def task_summarize_database(
-    connection, statement, run_llm: bool = True
-) -> dict:
-    """Read-only query -> profiler -> LLM -> validator -> summary dict."""
-    return _run_db_summary(connection, statement, run_llm)
-
-
 # Maps plain callable names (from the API layer) to registered celery tasks.
 TASKS = {
     "_run_summary": task_summarize_records,
-    "_run_db_summary": task_summarize_database,
 }
 
-__all__ = ["celery_app", "task_summarize_records", "task_summarize_database"]
+__all__ = ["celery_app", "task_summarize_records"]

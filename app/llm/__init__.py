@@ -1,4 +1,3 @@
-from .prompt_builder import build_prompt
 from app.providers import get_provider, OllamaProvider
 from app.schemas.summary import SummaryOutput, StructuredOutputError, parse_summary
 
@@ -10,28 +9,6 @@ class LLMService:
         if model is not None:
             provider = OllamaProvider(model=model)
         self.provider = provider or get_provider()
-
-    def generate_summary(
-        self, data, strict: bool = True, auto_fallback: bool = False
-    ) -> SummaryOutput:
-        """
-        Run the full pipeline.
-
-        strict=False disables validation. auto_fallback=True retries in
-        lenient mode once when strict validation fails, so a slightly
-        malformed answer still produces a usable summary.
-        """
-        prompt = build_prompt(data)
-        json_schema = SummaryOutput.model_json_schema()
-        text = self.provider.chat(prompt, json_mode=True, json_schema=json_schema)
-        try:
-            return parse_summary(text, strict=True)
-        except StructuredOutputError:
-            if auto_fallback and strict:
-                return parse_summary(text, strict=False)
-            if strict:
-                raise
-            return parse_summary(text, strict=False)
 
     def generate_summary_from_profile(
         self,

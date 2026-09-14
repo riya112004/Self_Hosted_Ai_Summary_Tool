@@ -1,1 +1,1 @@
-from .universal_data import UDR
+"""Schema models."""
