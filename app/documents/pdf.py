@@ -4,6 +4,10 @@ Kept isolated so PDF support never slows down the rest of the pipeline -
 pypdf is imported lazily and only when a PDF actually arrives.
 """
 
+import logging
+
+logger = logging.getLogger(__name__)
+
 
 def extract_pdf_text(data: bytes) -> str:
     import io
@@ -19,4 +23,6 @@ def extract_pdf_text(data: bytes) -> str:
     pages = []
     for page in reader.pages:
         pages.append(page.extract_text() or "")
-    return "\n\n".join(pages).strip()
+    result = "\n\n".join(pages).strip()
+    logger.info("extracted %d chars", len(result))
+    return result

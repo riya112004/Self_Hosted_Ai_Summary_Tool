@@ -174,18 +174,18 @@ async function analyze() {
     const t0 = performance.now();
     setStatus(`Uploading ${text.length || 0} chars…`);
 
-    // Phase 1: fast deterministic digest -> render almost instantly.
+    // Phase 1: fast deterministic digest. Computed silently - never rendered
+    // on its own, so the user sees exactly one final output.
+    let det = null;
     try {
-      const det = await fetchReport(false);
-      clearTick();
-      render(det, (performance.now() - started) / 1000, "(deterministic)");
+      det = await fetchReport(false);
     } catch (err) {
       clearTick();
       reportError(err.message || String(err));
       return;
     }
 
-    // Phase 2: upgrade with the AI narrative.
+    // Phase 2: final AI narrative -> the only output shown.
     setBusy(true);
     setStatus(`Generating AI narrative…`);
     try {
@@ -194,6 +194,7 @@ async function analyze() {
       render(withLlm, (performance.now() - started) / 1000, "(AI)");
     } catch (_) {
       clearTick();
+      render(det, (performance.now() - started) / 1000, "(deterministic)");
       toast("AI narrative unavailable; deterministic summary shown");
     }
   } catch (err) {

@@ -52,6 +52,7 @@ class VLLMProvider(LLMProvider):
         prompt: str,
         json_mode: bool = False,
         json_schema: dict | None = None,
+        options: dict | None = None,
     ) -> str:
         payload: dict = {
             "model": self.model,
@@ -60,6 +61,8 @@ class VLLMProvider(LLMProvider):
         }
         if self.max_tokens:
             payload["max_tokens"] = self.max_tokens
+        if options and options.get("num_predict"):
+            payload["max_tokens"] = int(options["num_predict"])
         if json_mode:
             payload["response_format"] = {"type": "json_object"}
             if json_schema is not None:

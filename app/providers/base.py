@@ -18,12 +18,15 @@ class LLMProvider(ABC):
         prompt: str,
         json_mode: bool = False,
         json_schema: dict | None = None,
+        options: dict | None = None,
     ) -> str:
         """
         Send a single user prompt to the inference server.
         Returns the raw completion text.
         When json_mode is True and json_schema is provided, request a
         schema-constrained (guided) JSON response where the server supports it.
+        `options` overrides per-call generation settings (num_ctx, num_predict /
+        max_tokens) without touching the shared defaults.
         """
 
     def list_models(self) -> list[str]:

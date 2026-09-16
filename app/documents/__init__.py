@@ -141,8 +141,10 @@ def detect_structure(text: str, source_type: str | None = None) -> DocumentStruc
         end = sections[idx + 1].line if idx + 1 < len(sections) else len(lines)
         sec.text = "\n".join(lines[sec.line : end]).strip("\n")
 
-    if not sections and text.strip():
-        sections.append(Section(heading=title or "Document", level=1, line=0, text=text.strip()))
+    if not sections:
+        sections.append(
+            Section(heading=title or "Document", level=1, line=0, text=text.strip() or "")
+        )
 
     paragraphs = 0
     for block in re.split(r"\n\s*\n", text):
@@ -193,6 +195,6 @@ def section_anchored_text(structure: DocumentStructure, max_chars: int = 20000) 
             break
         chunks.append(block)
         used += len(block)
-    if used == 0:
+    if used == 0 and structure.sections:
         chunks.append(structure.sections[0].text[:max_chars])
     return "\n\n".join(chunks)

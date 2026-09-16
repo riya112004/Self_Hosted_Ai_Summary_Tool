@@ -69,12 +69,14 @@ class OllamaProvider(LLMProvider):
         prompt: str,
         json_mode: bool = False,
         json_schema: dict | None = None,
+        options: dict | None = None,
     ) -> str:
+        generation = {**self.options, **(options or {})}
         payload = {
             "model": self.model,
             "messages": [{"role": "user", "content": prompt}],
             "stream": False,
-            "options": self.options,
+            "options": generation,
         }
         if self.model.startswith("qwen3"):
             # qwen3 is a reasoning model: without this it emits a long

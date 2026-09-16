@@ -179,6 +179,12 @@ def summarize_auto(request: AutoSummaryRequest):
                     detail=f"PDF text extraction failed: {exc}",
                 ) from exc
             mark("summarize/auto: extract_pdf_text", t0)
+            if not text.strip():
+                logger.warning("PDF extracted to empty text; returning 400")
+                raise HTTPException(
+                    status_code=400,
+                    detail="PDF contains no extractable text (scanned or image-only PDF?)",
+                )
             detection = {
                 "kind": "document",
                 "subtype": "pdf",

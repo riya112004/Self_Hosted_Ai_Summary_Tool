@@ -160,8 +160,21 @@ class DocumentSummarizer:
         prompt = build_document_prompt(structure)
         mark("document: build_prompt", t0)
 
+        # Long structured output: the full document JSON (title + understanding +
+        # key_points + technologies + risks + evidence) far exceeds the shared
+        # 500-token cap, and the strict-JSON instruction sits after the document
+        # text so the default 2048-token context can truncate it away. Give the
+        # document pass its own larger budget per call.
         t0 = start()
-        text = self.provider.chat(prompt, json_mode=True)
+        text = self.provider.chat(
+            prompt,
+            json_mode=True,
+            options={
+                "num_ctx": _env_int("DOC_NUM_CTX", 8192),
+                "num_predict": _env_int("DOC_NUM_PREDICT", 2000),
+
+            },
+        )
         mark("document: LLM single_pass", t0)
 
         t0 = start()
@@ -259,11 +272,22 @@ class DocumentSummarizer:
     def _rescue_partial(data: dict, raw: str, structure) -> DocumentSummary:
         """When model_validate fails (common: summary returned as a flat
         string instead of a dict), salvage every field that *did* parse
-        correctly and coalesce the summary field into a dict."""
+        correctly and coalesce the summary field into a dict.
+        When nothing parsed at all, degrade to a deterministic digest - never
+        dump raw LLM prose into the summary."""
         if not data:
-            s = DocumentSummary(title=structure.title)
-            s.summary["raw"] = raw[:1500]
-            return s
+            outline = [s.heading for s in structure.sections]
+            return DocumentSummary(
+                title=structure.title,
+                summary={
+                    "outline": outline or ["(no headings detected)"],
+                    "first_words": " ".join(
+                        section_anchored_text(structure, 3000).split()
+                    )[:600],
+                    "llm_error": "LLM output was not parseable JSON; "
+                    "showing deterministic digest.",
+                },
+            )
 
         summary_value = data.get("summary")
         if isinstance(summary_value, str):
